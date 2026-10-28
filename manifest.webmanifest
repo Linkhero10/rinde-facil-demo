@@ -1,0 +1,11 @@
+{
+  "name": "Rinde Fácil",
+  "short_name": "Rinde Fácil",
+  "description": "Guía paso a paso para rendir el convenio CORFO.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#51247a",
+  "lang": "es-CL",
+  "icons": [{ "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

@@ -99,7 +99,7 @@
     pea: ['Programa de Ejecución de Actividades', 'PEA General', 'PEA por proyecto', 'Administración', 'Todo el PEA en un solo documento'],
     reitem: ['Actualización de proyecto', 'Reitemización', 'Mover plata entre cuentas', 'Motivo del cambio', 'Cambio de presupuesto', 'Cambio de actividades', 'Cambio de plazos'],
     gastos: ['Segunda cotización', 'Cotizaciones de proveedores distintos y no relacionados', 'Autorización previa de CORFO', 'Servicio técnico-profesional', 'Sobre $10.000.000 netos', 'Subir foto o PDF', 'Sacar foto al comprobante', 'Anotar a mano', 'Leer con la nube (OCR)', 'Boleta', 'Factura', 'Boleta de honorarios', 'Monto neto', 'IVA', 'Total del documento', 'Monto a rendir', 'Glosa', 'Viático', 'Pago en efectivo', 'Comparé cada dato con el documento original', 'Rendición en formato SGP', 'Carpeta de respaldos por gasto', 'Gastos por cuenta', 'Proveedor', 'RUT del proveedor', 'Número (folio)', 'Foto del comprobante'],
-    revision: ['Cuadre entre trámites', 'Qué falta', 'Arreglar', 'Diferencias entre anexos y gastos', 'Fases saltadas', 'Si los números cuadran'],
+    revision: ['Cuadre entre pasos', 'Qué falta', 'Arreglar', 'Diferencias entre anexos y gastos', 'Fases saltadas', 'Si los números cuadran'],
     resumen: ['Resumen por cuentas', 'Rendido y presupuestado', 'Totales por cuenta'],
     observaciones: ['Observaciones de CORFO', '10 días hábiles', 'Aclarar las observaciones', 'Plazo para responder', 'Por única vez'],
     plazos: ['Plazos', 'Días hábiles', 'Feriados', 'Aclarar observaciones'],
@@ -111,7 +111,7 @@
     historial: ['Historial de cambios', 'Quién hizo qué y cuándo'],
     f29: ['Formulario 29, F29, IVA mensual', 'Sube el F29 de cada mes y compáralo con tus facturas'],
     nofinanciable: ['Gastos no financiables', 'Lo que no se puede pagar con el aporte'],
-    necesidades: ['Qué necesitará tu proyecto', 'Sueldos', 'Honorarios', 'Insumos', 'Viáticos', 'Inmuebles', 'Pagos en efectivo', 'Agregar algo que no estaba en el PEA', 'Trámites que te tocan'],
+    necesidades: ['Qué necesitará tu proyecto', 'Sueldos', 'Honorarios', 'Insumos', 'Viáticos', 'Inmuebles', 'Pagos en efectivo', 'Agregar algo que no estaba en el PEA', 'Pasos que te tocan'],
     documentos: ['Subir un documento', 'PEA corregido por CORFO', 'Acta de No Objeción', 'Acta de asamblea', 'Resolución u oficio', 'Observaciones de CORFO', '¿Cambia el PEA?', 'Cambios al PEA: qué falta hacer', 'Trazabilidad', 'Registro de documentos'],
     actas: ['Mesa de Trabajo', 'Acta firmada', 'Asistentes de CORFO, la comunidad y el Organismo Colaborador', 'Acuerdos y compromisos', 'Compromisos pendientes', 'Estado del acta', 'Revisada por CORFO'],
     seguridad: ['Contraseña', 'Cambiar la contraseña', 'Código de recuperación', 'Bloquear', 'Cerrar sesión', 'Quién entró al servicio', 'Registro de accesos', 'Cifrado', 'Inactividad', 'Borrar los datos de este equipo'],
@@ -154,7 +154,7 @@
       (t.notes || []).forEach(function (s) { fields.push({ text: typeof s === 'string' ? s : s.t, label: 'Ten en cuenta' }); });
       (t.steps || []).forEach(function (s, i) { fields.push({ text: s, label: 'Paso ' + (i + 1) }); });
       (t.src || []).forEach(function (s) { fields.push({ text: s, label: 'Fuente' }); });
-      items.push({ kind: t.kind === 'paso' ? 'Paso' : 'Trámite', title: t.title, path: path, fields: fields, href: '#/t/' + t.id, boost: 8 });
+      items.push({ kind: 'Paso', title: t.title, path: path, fields: fields, href: '#/t/' + t.id, boost: 8 });
     }
     /* herramientas */
     var seen = {};
@@ -195,7 +195,7 @@
     var resPath = toolPath('gastos').concat([toolTitle('gastos'), 'Respaldos que pide el Manual']);
     Object.keys(D.RESPALDOS || {}).forEach(function (k) { items.push({ kind: 'Respaldo', title: D.RESPALDOS[k], path: resPath, fields: [], href: '#/h/gastos' }); });
     REGLAS.forEach(function (r) { items.push({ kind: 'Regla', title: r.t, path: ['Reglas del Manual'], fields: [{ text: r.d }], href: '#/h/' + r.tool, boost: 5 }); });
-    items.push({ kind: 'Inicio', title: 'Mi ruta: dónde voy y qué sigue', path: ['Inicio'], fields: [{ text: 'Avance, siguiente paso, diagrama de quién hace qué y cuadre entre trámites.', kw: true }, { text: 'Inicio', kw: true }], href: '#/', boost: 6 });
+    items.push({ kind: 'Inicio', title: 'Mi ruta: dónde voy y qué sigue', path: ['Inicio'], fields: [{ text: 'Avance, siguiente paso, diagrama de quién hace qué y cuadre entre pasos.', kw: true }, { text: 'Inicio', kw: true }], href: '#/', boost: 6 });
     return items;
   }
 

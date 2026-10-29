@@ -76,21 +76,21 @@
     blocks = blocks.concat(RF.rendicion.comparacionesGastos(ex, p, true));
     var f29 = L.f29Audit(p, c);
     if (f29.items.length) { H(n + '. Formulario 29 mes a mes'); n++; blocks.push({ t: 'table', pw: [10, 9, 18, 18, 22, 23], head: ['Mes', 'Facturas', 'IVA de las facturas ($)', 'Créditos del F29 ($)', 'Archivo', 'Resultado'], types: ['text', 'number', 'money', 'money', 'text', 'text'], rows: f29.items.map(function (it) { return [it.mes, it.n, it.iva, it.record && it.record.creditos !== '' && it.record.creditos != null ? num(it.record.creditos) : '', it.record && it.record.file ? it.record.file.name : '', it.msg]; }) }); }
-    [['anexo1', 'Anexo 1 · Declaración por no utilización de IVA CF'], ['anexo2', 'Anexo 2 · IVA CF no relacionado con los proyectos'], ['anexo3', 'Anexo 3 · Declaraciones de pago en efectivo'], ['anexo4', 'Anexo 4 · Certificados de viático'], ['viaje', 'Registro de viajes'], ['anexo5', 'Anexo 5 · Memoria de cálculo de gastos de administración']].forEach(function (a) {
-      if (hasData(p, a[0])) { var m = safe(function () { return RF.docs.model(a[0]); }); if (m) { addDoc(n + '. ' + a[1], m); n++; } }
+    [['anexo1', 'ANEXO N° 1 POR NO UTILIZACIÓN DE IVA CF'], ['anexo2', 'ANEXO N° 2 UTILIZACIÓN DE IVA CF NO RELACIONADO CON LOS PROYECTOS'], ['anexo3', 'Anexo 3 · Declaraciones de pago en efectivo'], ['anexo4', 'Anexo 4 · Certificados de viático'], ['viaje', 'Registro de viajes'], ['anexo5', 'ANEXO N° 5 MEMORIA DE CÁLCULO GASTOS DE ADMINISTRACIÓN']].forEach(function (a) {
+      if (hasData(p, a[0])) { var m = safe(function () { return RF.docs.model(a[0]); }); if (m) { addDoc(n + '. ' + (RF.forms.SCHEMAS[a[0]] && /^anexo/.test(a[0]) ? RF.forms.SCHEMAS[a[0]].title : a[1]), m); n++; } }
     });
-    if (hasData(p, 'informe')) { addDoc(n + '. Informe técnico de avance (Anexo 6) con sus fichas', safe(function () { return RF.docs.model('informe'); })); n++; }
+    if (hasData(p, 'informe')) { addDoc(n + '. ANEXO N° 6 INFORME TÉCNICO con sus fichas', safe(function () { return RF.docs.model('informe'); })); n++; }
     if ((p.reitem && ((p.reitem.rows || []).length || p.reitem.motivo))) { addDoc(n + '. Cambios al PEA (reitemización)', safe(function () { return RF.docs.model('reitem'); })); n++; }
     if (hasData(p, 'prorroga')) { addDoc(n + '. Solicitud de ampliación', safe(function () { return RF.docs.model('prorroga'); })); n++; }
     if ((p.observations || []).length) { H(n + '. Observaciones de CORFO y aclaraciones'); n++; blocks.push({ t: 'table', wide: true, pw: [14, 9, 10, 25, 25, 7, 10], head: ['Resumen', 'Comunicada el', 'Gastos afectados', 'Qué pidió CORFO', 'Aclaración de la comunidad', 'Respondida', 'Archivos de CORFO'], types: ['text', 'date', 'text', 'text', 'text', 'text', 'text'], rows: p.observations.map(function (o) { return [o.titulo, o.recibida, o.gastos, o.detalle, o.respuesta, o.respondida ? 'Sí' : 'No', (o.files || []).map(function (f) { return f.name; }).join(', ')]; }) }); }
-    if (hasData(p, 'solicitud')) { addDoc(n + '. Solicitud de aportes restantes', safe(function () { return RF.docs.model('solicitud'); })); n++; }
+    if (hasData(p, 'solicitud')) { addDoc(n + '. Solicitud de aportes mediante el PEA', safe(function () { return RF.docs.model('solicitud'); })); n++; }
     return { pro: true, report: true, sheetsBy: 'h', footTitle: (p.name || 'Proyecto') + ' · ' + (c.name || ''), title: 'Informe de ejecución y rendición «' + (p.name || '') + '»', subtitle: (c.name || '') + (p.code ? ' · ' + p.code : '') + ' · emitido el ' + fd(U.todayISO()), sheet: 'Informe', footer: '', blocks: blocks };
   }
 
-  TOOLS.expediente = { title: 'Expediente completo del proyecto', icon: 'file', desc: 'Todo lo del proyecto en un solo archivo, que se arma solo a medida que avanzas.', render: function () {
+  TOOLS.expediente = { title: 'Expediente completo del proyecto', icon: 'file', desc: 'Reúne los antecedentes registrados del proyecto y regenera el archivo al exportarlo.', render: function () {
     var s = RF.store.get(), p = RF.store.project(), root = h('div', { class: 'tool-page' }, h('h1', { class: 'tool-title' }, 'Expediente completo del proyecto'));
     if (!p) { root.appendChild(UI.callout('info', '', 'Primero crea o elige un proyecto.')); return root; }
-    root.appendChild(h('p', { class: 'lead' }, 'Aquí se arma el informe final del proyecto, listo para entregar: datos de la comunidad, ejecución financiera, PEA con su Carta Gantt, detalle de los gastos, respaldos, cotizaciones, F29, anexos con sus firmas, informe técnico y observaciones de CORFO. Se actualiza solo cada vez que lo sacas.'));
+    root.appendChild(h('p', { class: 'lead' }, 'El expediente reúne los antecedentes que registras: datos de la comunidad, ejecución financiera, PEA con su Carta Gantt, detalle de los gastos, respaldos, cotizaciones, F29, anexos con sus firmas, informe técnico y observaciones de CORFO. El archivo se regenera con los datos actuales cada vez que lo exportas. Si cambias algún antecedente, vuelve a exportarlo para actualizar tu copia y revísala antes de entregarla.'));
     /* el aviso es solo de pantalla: no entra en el documento que se entrega */
     var aviso = RF.rendicion.avisoAdminGuardada(p); if (aviso) root.appendChild(UI.callout('warn', '', aviso));
     var list = h('ul', { class: 'exp-parts' });
@@ -105,7 +105,7 @@
       try { doc = st.doc = st.doc || build(RF.store.project(), RF.store.get()); } catch (e) { prev.appendChild(UI.callout('bad', 'No se pudo armar la vista previa.', ' ' + (e.message || e))); return; }
       prev.appendChild(h('p', { class: 'hint' }, st.fmt === 'xlsx' ? 'Excel: una hoja por sección y un índice. Los gráficos pasan a tablas con sus datos (Excel no los lleva dentro).' : st.fmt === 'word' ? 'Word: portada, índice, gráficos como imagen, tablas anchas en hoja horizontal y número de página. Es una vista aproximada: el archivo puede variar un poco según tu versión de Word.' : 'PDF: la misma portada, gráficos y tablas. Se guarda con «Imprimir o guardar como PDF».'));
       if (st.fmt === 'xlsx') { prev.appendChild(RF.exp.excelPreview(RF.exp.docToSheets(doc))); return; }
-      var frame = h('iframe', { class: 'exp-frame', title: 'Vista previa en ' + (st.fmt === 'word' ? 'Word' : 'PDF') });
+      var frame = h('iframe', { class: 'exp-frame', sandbox: '', title: 'Vista previa en ' + (st.fmt === 'word' ? 'Word' : 'PDF') });
       prev.appendChild(frame);
       frame.srcdoc = RF.exp.docToHtml(doc, { look: st.fmt }); /* srcdoc: funciona aunque el marco todavía no esté en la página */
       if (st.fmt === 'pdf') prev.appendChild(h('div', { class: 'row-actions' }, UI.btn('Abrir en pantalla completa', { cls: 'ghost small', onclick: function () { RF.exp.printDoc(doc); } })));

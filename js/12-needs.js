@@ -84,7 +84,7 @@
     obras: { kind: 'segun', text: 'Para el informe técnico: permisos y fotos de obras, fotos de actividades, listas de asistencia e informes de estudios. Aparte de las boletas y sin OCR.' },
     viaje: { kind: 'segun', text: 'Solo si hubo viajes: anota quién viajó, su rol y por qué era necesario.' },
     f29: { kind: 'segun', text: 'Solo si tus gastos incluyen facturas: el Manual pide el Formulario 29 de cada mes. Aquí lo guardas y se compara con el IVA de tus facturas.' },
-    solicitud: { kind: 'clave', text: 'Al final del proyecto, para pedir los aportes que faltan.' },
+    solicitud: { kind: 'segun', text: 'Solo si necesitas aportes: puedes solicitarlos mediante el PEA, con las rendiciones exigibles aprobadas y al día según el convenio vigente.' },
     calendario: { kind: 'apoyo', text: '' },
     documentos: { kind: 'apoyo', text: 'Tu archivo de documentos importantes: Acuerdo, resoluciones, certificados. Para tenerlos a mano.' },
     actas: { kind: 'apoyo', text: 'Para dejar registro de las reuniones de la mesa de trabajo. Úsala cuando haya una reunión.' },

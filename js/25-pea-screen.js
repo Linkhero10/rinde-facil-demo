@@ -16,7 +16,7 @@
   /* estados de un respaldo de la asamblea (lista de respaldos de la pantalla); por defecto, Pendiente */
   var RESPALDOS = [{ id: 'pendiente', name: 'Pendiente' }, { id: 'subida', name: 'Subida' }, { id: 'no_disponible', name: 'No disponible' }];
   var PDF_MIME = 'application/pdf';
-  var OCR_AVISO = 'Este PEA se leyó por OCR (PDF escaneado): revisa cada dato contra el documento antes de aplicar. El presupuesto y la carta Gantt no se leen de un escaneado: escríbelos en la sección de cada proyecto, o sube el Word del PEA.';
+  var OCR_AVISO = 'Este PEA se leyó por OCR (PDF escaneado): revisa cada dato contra el documento antes de aplicar. Ingresa manualmente el presupuesto y la Carta Gantt desde sus archivos Excel; el Word aporta los antecedentes descriptivos del proyecto.';
   var LOCAL_MSG = 'Guardado solo en este equipo; conecta el servicio para copiarlo al Drive.';
   var seq = 0;
 
@@ -232,6 +232,7 @@
    * datos: { type, title, from, peaChange }. Se guarda en silencio: una escritura normal vuelve a dibujar la pantalla y se pierde el mensaje. */
   function saveOficialRecord(file, date, datos) {
     var rec = { id: newId('d'), type: datos.type, title: datos.title, date: date, projectId: '', from: datos.from, peaChange: datos.peaChange, changes: {}, note: '', sgpDone: false, appDone: false, createdAt: new Date().toISOString(), fileName: file.name, mime: RF.repo.mimeOf(file.name, file.type), size: file.size, blobId: null };
+    if (datos.fondos) rec.fondos = Object.assign({}, datos.fondos, { documentoId: rec.id, archivo: file.name, fechaActa: date });
     rec.blobId = 'rec-' + rec.id;
     return RF.blobs.put(rec.blobId, file).then(function () {
       RF.store.update(function (st2) {
@@ -247,7 +248,7 @@
     });
   }
   /* acta de no objeción: del PEA completo, con su fecha; Documentos oficiales y la subcarpeta «Actas de no objeción» */
-  function saveActaRecord(file, date) { return saveOficialRecord(file, date, { type: 'acta_no_objecion', title: 'Acta de No Objeción', from: 'corfo', peaChange: 'no' }); }
+  function saveActaRecord(file, date, fondos) { return saveOficialRecord(file, date, { type: 'acta_no_objecion', title: 'Acta de No Objeción', from: 'corfo', peaChange: 'no', fondos: fondos }); }
   /* extracto del acta de asamblea: otra subida, con su propia fecha; tipo de documento «Acta de asamblea» (subcarpeta «Actas de asamblea») */
   /* el extracto registra la asamblea; no es una modificación pendiente del PEA (un cambio se registra aparte, con su acta de asamblea) */
   function saveExtractoRecord(file, date) { return saveOficialRecord(file, date, { type: 'acta_asamblea', title: 'Extracto de acta de asamblea', from: 'comunidad', peaChange: 'no' }); }
@@ -313,12 +314,24 @@
   function avisarLecturaTerminada(detalle) {
     document.dispatchEvent(new CustomEvent('rf-pea-lectura-terminada', { detail: detalle }));
   }
+  function paginaParaVisor(p) {
+    return { number: p.number, url: p.blob ? URL.createObjectURL(p.blob) : null, text: p.text || '' };
+  }
 
-  TOOLS.subirpea = { title: 'Subir el PEA', icon: 'file', desc: 'Sube el Word del PEA: la app lee tu comunidad, tus proyectos, el presupuesto y la Carta Gantt, y los aplica sin borrar nada.', render: function () {
+  TOOLS.subirpea = { title: 'Subir el PEA', icon: 'file', desc: 'Lee los antecedentes de comunidad y proyectos desde el Word del PEA. Ingresa manualmente el presupuesto y la Carta Gantt desde sus archivos Excel.', render: function () {
     var U = RF.util, UI = RF.ui, h = U.h;
     var st = { file: null, model: null, leido: null, notice: '', aviso: '', reading: false, stage: '', ocrText: '', fromPdf: false, busy: false, result: null, lectura: null, lecturaUrl: null, paginas: [],
-      acta: { file: null, date: '', busy: false, result: null },
+      acta: { file: null, date: '', busy: false, result: null, fondos: { recibido: '', saldo: '', verificado: false } },
       extracto: { file: null, date: '', busy: false, result: null }, aprobNuevo: { tipo: 'contratista', descripcion: '' }, aprobDestino: { id: '' }, aprobBorr: {}, aprobError: {} };
+
+    /* El acta es la fuente de estos importes. No se precargan desde lecturas del PEA. */
+    var actasConFondos = (((RF.store.get().repo || {}).docs) || []).filter(function (d) { return d.type === 'acta_no_objecion' && d.fondos && d.fondos.procedencia === 'transcripcion_acta_verificada'; });
+    var ultimaActa = actasConFondos[actasConFondos.length - 1];
+    if (ultimaActa) {
+      st.acta.date = ultimaActa.date || '';
+      ['recibido', 'saldo'].forEach(function (k) { st.acta.fondos[k] = ultimaActa.fondos[k] == null ? '' : U.fmtNum(ultimaActa.fondos[k]); });
+      st.acta.referencia = ultimaActa.fileName;
+    }
 
     /* la lectura se guarda en IndexedDB (RF.blobs), aparte del estado de la app: no se pierde al sincronizar y no viaja en las copias de Drive */
     function guardarLectura() {
@@ -390,20 +403,21 @@
         st.file = d.file; st.fromPdf = true; st.trabajo = null; st.notice = ''; st.aviso = d.aviso || '';
         st.model = d.model; st.leido = copia(d.model); st.ocrText = d.ocrText || '';
         st.lectura = d.lectura; st.lecturaUrl = URL.createObjectURL(new Blob([JSON.stringify(d.lectura)], { type: 'application/json' }));
-        st.paginas = (d.paginas || []).map(function (p) { return { number: p.number, url: URL.createObjectURL(p.blob) }; });
+        st.paginas = (d.paginas || []).map(paginaParaVisor);
       } else {
         st.file = null; st.model = null; st.leido = null; st.fromPdf = false; st.ocrText = ''; soltarDescarga();
         st.trabajo = d.trabajo; st.notice = d.notice || ''; st.aviso = '';
       }
       paint();
-      RF.ocr.tarjetaLimites(cuotaBox, {});
+      if (!d.lectura || d.lectura.engine !== 'capa_texto') RF.ocr.tarjetaLimites(cuotaBox, {});
+      else U.clear(cuotaBox);
     }
     if (PEA_EN_CURSO) document.addEventListener('rf-pea-lectura-terminada', alTerminarLectura);
 
     /* libera el enlace de descarga de la lectura técnica (JSON) del PDF anterior */
     function soltarDescarga() {
       if (st.lecturaUrl) URL.revokeObjectURL(st.lecturaUrl);
-      (st.paginas || []).forEach(function (p) { URL.revokeObjectURL(p.url); });
+      (st.paginas || []).forEach(function (p) { if (p.url) URL.revokeObjectURL(p.url); });
       st.lectura = null; st.lecturaUrl = null; st.paginas = [];
     }
 
@@ -430,13 +444,12 @@
       }).then(function () { st.reading = false; paint(); });
     }
 
-    /* PDF escaneado: cada página se dibuja derecha, se manda al OCR del servicio y el texto se lee por posición (RF.pea.extractFromOcr).
+    /* PDF: reutiliza su texto; solo las páginas sin texto útil se dibujan y se mandan al OCR del servicio.
        Si el usuario elige otro archivo mientras esto corre, deja de mandar páginas y no toca la pantalla. */
     function onPdf(file) {
       var fileError = RF.ocr && RF.ocr.validarArchivo && RF.ocr.validarArchivo(file);
       if (fileError) { st.notice = fileError.message; paint(); return; }
-      if (!RF.ocr || !RF.ocr.recognizePage || !RF.pdfPages || !RF.pea.extractFromOcr) { st.notice = 'No está cargada la lectura de PDF en esta versión.'; paint(); return; }
-      if (!RF.cloud || !RF.cloud.configured()) { st.notice = 'Para leer un PDF escaneado conecta primero el servicio en la nube (en Ajustes). Mientras tanto puedes subir el Word del PEA.'; paint(); return; }
+      if (!RF.ocr || !RF.ocr.recognizePage || !RF.pdfPages || !RF.pdfPages.preparePages || !RF.pea.extractFromOcr) { st.notice = 'No está cargada la lectura de PDF en esta versión.'; paint(); return; }
       if (PEA_EN_CURSO) {
         st.notice = mismoArchivo(PEA_EN_CURSO, file) ? 'Esa lectura ya está en curso. Espera a que termine.' : 'Hay otra lectura en curso (' + PEA_EN_CURSO.nombre + '). Espera a que termine antes de empezar otra.';
         paint(); return;
@@ -444,7 +457,7 @@
       if (!bovedaAbierta()) { st.notice = 'La sesión está cerrada. Vuelve a entrar para leer el PDF.'; paint(); return; }
       var trabajo = trabajoDe(file), idn = null;
       PEA_EN_CURSO = trabajo;
-      var corrida = {}, blobsPagina = [], total = 0, hechas = 0;
+      var corrida = {}, blobsPagina = [], total = 0, hechas = 0, ocrNecesarias = 0;
       st.file = file; st.pdfRun = corrida; st.reading = true; st.fromPdf = true; st.stage = 'Revisando si este PDF ya se leyó…'; st.trabajo = null; st.notice = ''; st.aviso = ''; paint();
       /* vigente: sigue siendo este archivo y esta misma corrida; si el usuario eligió otro, lo de aquí ya no se aplica */
       var vigente = function () { return st.file === file && st.pdfRun === corrida; };
@@ -459,24 +472,28 @@
         if (RF.blobs && RF.blobs.put) RF.blobs.put('pea-lectura', file).catch(function () { /* sin espacio */ });
         return readBuffer(file);
       }).then(function (buf) {
-        return RF.pdfPages.renderPages(buf, function (num, t) { say('Preparando la página ' + num + ' de ' + t + '…'); }, vigente);
+        return RF.pdfPages.preparePages(buf, function (num, t) { say('Preparando la página ' + num + ' de ' + t + '…'); }, vigente);
       }).then(function (rendered) {
         total = rendered.total;
-        blobsPagina = rendered.pages.map(function (p) { return { number: p.number, blob: p.blob }; });
+        blobsPagina = rendered.pages.map(function (p) { return { number: p.number, blob: p.blob, text: p.result ? p.result.raw_text : '' }; });
         if (!bovedaAbierta()) throw sesionCerrada();
         guardarMeta(trabajo, total);
         return leerPaginasGuardadas(trabajo, total, true).then(function (guardadas) {
           var previas = Object.keys(guardadas).length;
+          ocrNecesarias = rendered.pages.filter(function (p) { return !p.result && !guardadas[p.number]; }).length;
           return RF.ocr.documentoGuardado(trabajo.id).then(function (doc) {
             if (!vigente()) return null;
             st.aviso = textoRepetido(previas, total, doc, file);
-            RF.ocr.tarjetaLimites(cuotaBox, { paginas: total, leidas: previas });
+            if (ocrNecesarias) RF.ocr.tarjetaLimites(cuotaBox, { paginas: total, leidas: total - ocrNecesarias });
+            else U.clear(cuotaBox);
             paint();
             var results = [], chain = Promise.resolve();
             rendered.pages.forEach(function (p) {
               chain = chain.then(function () {
+                if (p.result) { results.push(p.result); hechas++; return null; }
                 if (guardadas[p.number]) { results.push(guardadas[p.number]); hechas++; return null; }
                 if (!bovedaAbierta()) throw sesionCerrada();
+                if (!RF.cloud || !RF.cloud.configured()) throw new Error('Para leer las páginas sin texto útil conecta primero el servicio en la nube (en Ajustes). También puedes subir el Word del PEA');
                 say('Leyendo la página ' + p.number + ' de ' + total + ' con Google…');
                 return RF.ocr.recognizePage(p.blob, p.number, function (intento) {
                   say('Google no respondió bien con la página ' + p.number + '. Reintentando (intento ' + intento + ' de 3)…');
@@ -502,7 +519,7 @@
         soltarDescarga();
         st.lectura = res;
         st.lecturaUrl = URL.createObjectURL(new Blob([JSON.stringify(res)], { type: 'application/json' }));
-        st.paginas = blobsPagina.map(function (p) { return { number: p.number, url: URL.createObjectURL(p.blob) }; });
+        st.paginas = blobsPagina.map(paginaParaVisor);
         st.model = P.normalizarModelo(RF.pea.extractFromOcr(res));
         st.leido = copia(st.model);
         /* sin sesión no se guarda la lectura final: las páginas quedan cifradas y, al volver a entrar, se aplica sin volver a cobrar */
@@ -512,7 +529,7 @@
         soltarMarca();
         st.reading = false; st.stage = ''; st.notice = ''; paint();
         avisarLecturaTerminada({ ok: true, corrida: corrida, model: st.model, ocrText: st.ocrText, file: file, lectura: res, paginas: blobsPagina, aviso: st.aviso });
-        RF.ocr.tarjetaLimites(cuotaBox, {});
+        if (ocrNecesarias) RF.ocr.tarjetaLimites(cuotaBox, {});
       }).catch(function (e) {
         terminar();
         if (!vigente()) return soltarLectura();
@@ -523,7 +540,7 @@
         st.notice = 'No se pudo leer el PDF: ' + motivo + '.' + (pendiente && hechas ? ' Lo que ya se leyó queda guardado cifrado: al reintentar no se cobra de nuevo.' : '');
         paint();
         avisarLecturaTerminada({ ok: false, corrida: corrida, trabajo: pendiente, notice: st.notice });
-        RF.ocr.tarjetaLimites(cuotaBox, {});
+        if (ocrNecesarias) RF.ocr.tarjetaLimites(cuotaBox, {});
       });
     }
 
@@ -542,7 +559,7 @@
       return UI.section('1 · Elige el Word o el PDF del PEA', [
         h('div', { class: 'file-pick' }, inp,
           UI.btn(st.file ? 'Cambiar archivo' : 'Elegir el PEA', { icon: 'file', cls: st.file ? 'ghost' : 'primary', onclick: function () { inp.click(); } }),
-          st.file ? h('span', { class: 'file-name' }, st.file.name + ' · ' + Math.max(1, Math.round(st.file.size / 1024)) + ' KB') : h('span', { class: 'hint' }, 'Word (.docx) o PDF escaneado (se lee con el OCR del servicio).')),
+          st.file ? h('span', { class: 'file-name' }, st.file.name + ' · ' + Math.max(1, Math.round(st.file.size / 1024)) + ' KB') : h('span', { class: 'hint' }, 'Word (.docx) o PDF. Solo las páginas sin texto útil necesitan OCR.')),
         UI.fileDrop(inp, { kind: 'official', label: 'Arrastra aquí el PEA o pulsa para buscarlo', hint: 'Word (.docx) o PDF.', invalidText: 'Ese formato no se puede leer aquí. Sube el PEA en Word (.docx) o PDF.', onFiles: function (files) { onFile(files[0]); } }),
         cuotaBox,
         st.notice ? UI.callout('warn', '', st.notice) : null,
@@ -565,7 +582,7 @@
       var kids;
       if (st.paginas && st.paginas.length) {
         kids = st.paginas.map(function (p) {
-          return h('figure', null, h('img', { src: p.url, alt: 'Página ' + p.number + ' del PEA', loading: 'lazy' }), h('figcaption', null, 'Página ' + p.number));
+          return h('figure', null, p.url ? h('img', { src: p.url, alt: 'Página ' + p.number + ' del PEA', loading: 'lazy' }) : h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, p.text), h('figcaption', null, 'Página ' + p.number));
         });
       } else {
         kids = [h('p', { class: 'hint' }, 'Del Word no se muestra una vista aquí. Ábrelo al lado y revisa cada campo de la derecha.')];
@@ -638,18 +655,26 @@
           UI.field('Nombre de la comunidad', mc, 'name', { cls: 'wide', ph: noLeido }),
           UI.field('RUT de la comunidad', mc, 'rut', { type: 'rut', ph: '12.345.678-5', hint: rutHint }),
           UI.field('Representante legal', mc, 'legalRep', { ph: noLeido, hint: 'El PEA no dice quién es el representante legal. Escríbelo solo si lo confirmas; no lo tomes de las firmas.' }),
-          /* el organismo y el apoyo para elaborar el PEA no están en el PEA: se quitaron (reunión con Manuel) */
+          /* El organismo y el apoyo para elaborar el PEA se completan fuera de esta lectura. */
           UI.field('Dirección', mc, 'address', { cls: 'wide', ph: noLeido }))
       ]));
 
-      /* el encargado del acuerdo y sus contactos no se piden aquí (reunión con Manuel): quedan en el modelo, sin mostrarse */
+      /* Contactos corregibles sobre el mismo modelo que se aplica, sin repetir OCR. */
+      kids.push(UI.section('Encargado del convenio', [
+        h('div', { class: 'form-grid' },
+          UI.field('Nombre del encargado del convenio', ct, 'encargado', { ph: noLeido }),
+          UI.field('Nombre del contacto que figura con RUT', ct.secretaria, 'nombre', { ph: noLeido }),
+          UI.field('RUT del encargado del convenio', ct.secretaria, 'rut', { type: 'rut', ph: noLeido }),
+          listaEditable(ct.telefonos, 'Teléfono de contacto', noLeido),
+          listaEditable(ct.correos, 'Correo de contacto', noLeido))
+      ]));
       kids.push(UI.section('Fechas', [
         h('div', { class: 'form-grid' },
           UI.field('Fecha de entrega a CORFO', mc, 'fechaEntrega', { type: 'date' }),
           UI.field('Fecha de validación por la Asamblea', mc, 'asambleaValidacion', { type: 'date' }))
       ]));
 
-      /* los fondos del 30 % del AIA no van en el PEA: son del acta de no objeción. Su dato se extrae y queda en el modelo, sin mostrarse aquí */
+      /* Los importes históricos leídos del PEA se conservan en el modelo, sin usarlos como fondos del acta. */
       var projs =(m.projects || []).filter(function (x) { return x && !esAdmin(x); });
       if (!projs.length) kids.push(UI.callout('warn', 'El PEA no trae proyectos.', ' Revisa el Word: la app busca tablas «Nombre del proyecto».'));
       projs.forEach(function (mp, i) {
@@ -662,6 +687,7 @@
             UI.field('Inicio', mp, 'start', { type: 'date' }),
             UI.field('Término', mp, 'end', { type: 'date' })),
           h('h4', null, 'Presupuesto por cuenta'),
+          h('p', { class: 'hint' }, 'Ingreso manual desde el Excel de presupuesto. Los valores sugeridos del Word deben revisarse contra esa fuente.'),
           h('div', { class: 'form-grid' },
             UI.field('Recursos humanos', mp.budgetApproved, 'rrhh', { type: 'money' }),
             UI.field('Gastos operacionales', mp.budgetApproved, 'operacion', { type: 'money' }),
@@ -674,7 +700,7 @@
           h('p', { class: 'hint' }, (mp.presupuestoTotal != null ? 'Total declarado en el PEA: ' + U.fmtCLP(mp.presupuestoTotal) + '. ' : '') + 'La administración no se reparte: va al proyecto «' + ADMIN + '».'),
         ].concat(
           [h('h4', null, 'Presupuesto: líneas por cuenta')], lineasEditor(mp),
-          [h('h4', null, 'Carta Gantt: etapas y actividades')], ganttEditor(mp))));
+          [h('h4', null, 'Carta Gantt: etapas y actividades'), h('p', { class: 'hint' }, 'Ingreso manual desde el Excel de Carta Gantt. Revisa etapas, actividades y fechas antes de aplicar.')], ganttEditor(mp))));
       });
 
       var adm = (m.projects || []).filter(function (x) { return x && esAdmin(x); })[0];
@@ -688,8 +714,10 @@
       ]));
 
       if (st.fromPdf) {
-        kids.push(UI.callout('warn', 'PDF escaneado:', ' ' + OCR_AVISO));
-        var lecturaKids = [h('summary', null, 'Texto que leyó el OCR'), h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, st.ocrText || '(sin texto)')];
+        kids.push(st.lectura && st.lectura.engine === 'capa_texto'
+          ? UI.callout('info', 'Texto del PDF:', ' Se leyó sin OCR ni gasto de lecturas. Revisa cada dato contra el documento antes de aplicar.')
+          : UI.callout('warn', 'PDF con OCR:', ' ' + OCR_AVISO));
+        var lecturaKids = [h('summary', null, 'Texto leído del PDF'), h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, st.ocrText || '(sin texto)')];
         if (st.lecturaUrl) lecturaKids.push(h('p', { class: 'hint' }, h('a', { href: st.lecturaUrl, download: 'lectura-pea-tecnica.json' }, 'Descargar lectura técnica (JSON)')));
         kids.push(h.apply(null, ['details', { class: 'ocr-raw' }].concat(lecturaKids)));
       }
@@ -761,17 +789,21 @@
         });
     }
 
-    /* los fondos del 30 % del AIA van en el acta de no objeción, no en el PEA: el dato se lee del PEA y se corrige aquí */
+    /* Transcripción independiente del acta: se guarda con el documento y su procedencia. */
     function fondosBox() {
-      var mc = st.model.community = st.model.community || {};
-      var a30 = mc.aia30 = mc.aia30 || { recibido: null, saldo: null };
-      var avisos = (st.model.warnings || []).filter(function (w) { return /30 ?%/.test(w); });
+      var a30 = st.acta.fondos;
+      function monto(label, key) {
+        var inp = h('input', { type: 'text', inputmode: 'numeric' }); inp.value = a30[key];
+        inp.addEventListener('input', function () { a30[key] = inp.value; a30.verificado = false; var ck = document.getElementById('fondos-acta-verificados'); if (ck) ck.checked = false; });
+        return h('label', { class: 'field' }, h('span', { class: 'lbl' }, label), inp);
+      }
       return h('div', null,
-        h('p', { class: 'hint' }, 'Monto recibido como primera cuota y saldo del 30 % del AIA. Se leen del PEA y se corrigen aquí, porque van en el acta de no objeción.'),
+        h('p', { class: 'hint' }, 'Transcribe estos montos desde el acta de no objeción y verifícalos contra ella antes de registrarlos. No se toman del PEA. Si el acta no los indica, déjalos vacíos.'),
+        st.acta.referencia ? h('p', { class: 'hint' }, 'Última transcripción registrada: ' + st.acta.referencia + '. Al elegir otra acta, completa sus propios valores.') : null,
         h('div', { class: 'form-grid' },
-          UI.field('Monto recibido como primera cuota (30 % del AIA)', a30, 'recibido', { type: 'money' }),
-          UI.field('Saldo del 30 % del AIA', a30, 'saldo', { type: 'money' })),
-        avisos.length ? UI.callout('warn', '', avisos.join(' ')) : null);
+          monto('Monto recibido como primera cuota (30 % del AIA)', 'recibido'),
+          monto('Saldo del 30 % del AIA', 'saldo')),
+        h('label', { class: 'check' }, h('input', { id: 'fondos-acta-verificados', type: 'checkbox', checked: a30.verificado, onchange: function (ev) { a30.verificado = ev.target.checked; } }), 'Verifiqué los montos transcritos contra el acta adjunta'));
     }
 
     function actaBox() {
@@ -783,10 +815,10 @@
         h('div', { class: 'file-pick' }, inp,
           UI.btn(st.acta.file ? 'Cambiar archivo' : 'Elegir el acta (PDF o Word)', { icon: 'file', cls: 'ghost', onclick: function () { inp.click(); } }),
           st.acta.file ? h('span', { class: 'file-name' }, st.acta.file.name) : null),
-        UI.fileDrop(inp, { kind: 'official', label: 'Arrastra aquí el acta o pulsa para buscarla', hint: 'PDF o Word.', invalidText: 'Formato no compatible. Sube el acta en PDF o Word.', onFiles: function (files) { st.acta.file = files[0]; paint(); } }),
+        UI.fileDrop(inp, { kind: 'official', label: 'Arrastra aquí el acta o pulsa para buscarla', hint: 'PDF o Word.', invalidText: 'Formato no compatible. Sube el acta en PDF o Word.', onFiles: function (files) { st.acta.file = files[0]; st.acta.date = ''; st.acta.fondos = { recibido: '', saldo: '', verificado: false }; st.acta.referencia = ''; st.acta.result = null; paint(); } }),
         h('div', { class: 'form-grid' },
           h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'Fecha del acta'), dateInp)),
-        st.model ? fondosBox() : null,
+        fondosBox(),
         h('div', { class: 'row-actions' }, UI.btn('Registrar el acta', { icon: 'check', cls: 'primary', disabled: st.acta.busy, onclick: saveActa })),
         st.acta.result ? UI.callout(st.acta.result.kind, '', st.acta.result.text) : null
       ]);
@@ -796,8 +828,19 @@
       var a = st.acta;
       if (!a.file) { a.result = { kind: 'bad', text: 'Elige el archivo del acta (PDF o Word).' }; paint(); return; }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(a.date || '')) { a.result = { kind: 'bad', text: 'Escribe la fecha del acta.' }; paint(); return; }
+      var fondos = { recibido: null, saldo: null }, invalid = false;
+      ['recibido', 'saldo'].forEach(function (k) {
+        var raw = String(a.fondos[k] || '').trim(); if (!raw) return;
+        if (!/^(?:\d+|\d{1,3}(?:\.\d{3})+)$/.test(raw)) { invalid = true; return; }
+        var n = Number(raw.replace(/\./g, '')); if (!Number.isSafeInteger(n)) invalid = true; else fondos[k] = n;
+      });
+      if (invalid) { a.result = { kind: 'bad', text: 'Escribe los montos del acta en pesos enteros no negativos, o déjalos vacíos.' }; paint(); return; }
+      var conMontos = fondos.recibido !== null || fondos.saldo !== null;
+      if (conMontos && !a.fondos.verificado) { a.result = { kind: 'bad', text: 'Verifica los montos contra el acta adjunta antes de registrarlos.' }; paint(); return; }
+      fondos.procedencia = conMontos ? 'transcripcion_acta_verificada' : 'sin_transcripcion';
+      fondos.verificadoEn = conMontos ? new Date().toISOString() : null;
       a.busy = true; a.result = null; paint();
-      saveActaRecord(a.file, a.date).then(function (out) {
+      saveActaRecord(a.file, a.date, fondos).then(function (out) {
         a.busy = false; a.file = null; a.result = resultadoRegistro(out, 'Acta registrada', 'Actas de no objeción');
         paint();
       }).catch(function (e) {
@@ -957,7 +1000,7 @@
     paint();
     RF.ocr.tarjetaLimites(cuotaBox, {});
     return h('div', { class: 'tool-page' }, h('h1', { class: 'tool-title' }, 'Subir el PEA'),
-      h('p', { class: 'lead' }, 'Sube el Word del PEA para que la app arme tu comunidad, tus proyectos, el presupuesto y la Carta Gantt. Revisas y corriges todo antes de aplicarlo.'),
+      h('p', { class: 'lead' }, 'Sube el Word del PEA para leer los antecedentes de tu comunidad y tus proyectos. El presupuesto y la Carta Gantt tienen sus propios archivos Excel: ingrésalos manualmente en las secciones de cada proyecto. Si aparecen datos sugeridos desde el Word, contrástalos con esos Excel y corrígelos antes de aplicar.'),
       body);
   } };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -1,5 +1,5 @@
-/* Rinde Fácil — PDF escaneado: cada página se dibuja ya derecha (pdf.js aplica la rotación del PDF) y se manda al OCR como imagen.
- * Así no importa cómo esté girada la imagen guardada dentro del PDF. La librería se carga solo cuando se necesita (vendor/pdfjs). */
+/* Rinde Fácil — PDF: primero su capa de texto; solo las páginas sin texto útil se dibujan para OCR.
+ * pdf.js aplica la rotación del PDF. La librería se carga solo cuando se necesita (vendor/pdfjs). */
 (function (root) {
   'use strict';
   var RF = root.RF = root.RF || {};
@@ -7,6 +7,8 @@
   var SCALE = 2.2; /* ~158 ppp en carta: una hoja carta sale a 1346x1742 px; texto legible para el OCR sin archivos enormes */
   var LADO_MAX = 3000; /* formatos gigantes (p. ej. A0): la escala baja para que el lado mayor no pase de 3000 px */
   var LIMITE_PAGINA_MS = 90000; /* una página que no se dibuja y codifica en 90 s se corta y el PDF no se aplica */
+  var TEXTO_UTIL_MIN_ALFANUMERICOS = 40;
+  var TOLERANCIA_LINEA = 2; /* puntos: tolera pequeñas diferencias de línea base entre fragmentos */
   var libPromise = null;
 
   PP.load = function () {
@@ -35,6 +37,78 @@
     if (canvas) { canvas.width = 0; canvas.height = 0; }
     if (page && typeof page.cleanup === 'function') { try { page.cleanup(); } catch (e) { /* no es crítico */ } }
   }
+
+  PP.hasUsefulText = function (text) {
+    var compacto = String(text || '').replace(/\s/g, '');
+    var alfanumericos = (compacto.match(/[\p{L}\p{Nd}]/gu) || []).length;
+    return alfanumericos >= TEXTO_UTIL_MIN_ALFANUMERICOS && alfanumericos >= Array.from(compacto).length / 2;
+  };
+
+  function textoOrdenado(page, content) {
+    var vp = page.getViewport({ scale: 1 });
+    var fragments = (content.items || []).filter(function (item) { return typeof item.str === 'string' && item.str.trim(); }).map(function (item) {
+      var pos = vp.convertToViewportPoint(item.transform[4], item.transform[5]);
+      return { text: item.str.replace(/\s+/g, ' ').trim(), x: pos[0], y: pos[1] };
+    }).sort(function (a, b) { return a.y - b.y || a.x - b.x; });
+    var lines = [];
+    fragments.forEach(function (fragment) {
+      var line = lines[lines.length - 1];
+      if (!line || Math.abs(line.y - fragment.y) > TOLERANCIA_LINEA) {
+        line = { y: fragment.y, fragments: [] }; lines.push(line);
+      }
+      line.fragments.push(fragment);
+    });
+    return lines.map(function (line) {
+      return line.fragments.sort(function (a, b) { return a.x - b.x; }).map(function (f) { return f.text; }).join(' ');
+    }).join('\n');
+  }
+
+  /* Conserva el buffer original: pdf.js puede transferir y desconectar los bytes que recibe. */
+  PP.extractText = function (arrayBuffer, onPage, seguir) {
+    var doc = null;
+    return Promise.resolve().then(function () { return PP.load(); }).then(function (lib) {
+      return lib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+    }).then(function (d) {
+      doc = d;
+      var pages = [], chain = Promise.resolve();
+      var paso = function (num) { return function () {
+        if (seguir && !seguir()) throw new Error('lectura cancelada');
+        if (onPage) onPage(num, doc.numPages);
+        var page = null;
+        return doc.getPage(num).then(function (p) {
+          page = p;
+          return p.getTextContent();
+        }).then(function (content) {
+          var text = textoOrdenado(page, content);
+          var result = PP.hasUsefulText(text) ? { number: num, ok: true, raw_text: text, engine: 'capa_texto', confidence: null,
+            pages: [{ number: num, text: text, engine: 'capa_texto', confidence: null }] } : null;
+          pages.push({ number: num, result: result });
+        }).catch(function () {
+          pages.push({ number: num, textLayerFallback: true });
+        }).then(function () { liberar(page, null); });
+      }; };
+      for (var i = 1; i <= doc.numPages; i++) chain = chain.then(paso(i));
+      return chain.then(function () { return { total: doc.numPages, pages: pages }; });
+    }).then(function (res) { cerrar(doc); return res; }, function (e) { cerrar(doc); throw e; });
+  };
+
+  /* Prepara texto o JPEG por página. Con directoSinTexto, null conserva el OCR completo de PDF pequeños sin texto.
+   * Solo captura fallos de extracción; los de dibujo y de servicio conservan su rechazo original. */
+  PP.preparePages = function (arrayBuffer, onPage, seguir, directoSinTexto) {
+    return PP.extractText(arrayBuffer, onPage, seguir).catch(function () { return null; }).then(function (extracted) {
+      if (seguir && !seguir()) throw new Error('lectura cancelada');
+      var utiles = extracted && extracted.pages.filter(function (p) { return !!p.result; });
+      if (!utiles || !utiles.length) {
+        if (directoSinTexto) return null;
+        return PP.renderPages(arrayBuffer, onPage, seguir);
+      }
+      var faltantes = extracted.pages.filter(function (p) { return !p.result; }).map(function (p) { return p.number; });
+      if (!faltantes.length) return extracted;
+      return PP.renderPages(arrayBuffer, onPage, seguir, faltantes).then(function (rendered) {
+        return { total: extracted.total, pages: utiles.concat(rendered.pages).sort(function (a, b) { return a.number - b.number; }) };
+      });
+    });
+  };
   /* dibuja una página a JPEG con fondo blanco. Pedir la página, dibujarla y codificarla tienen un límite común de 90 s:
      si se pasa, se cancela el dibujo y se rechaza. El temporizador se borra al terminar, sea como sea. */
   function dibujarPagina(doc, num) {
@@ -81,7 +155,7 @@
   /* devuelve { total, pages: [{ number, blob, width, height }] }. onPage(num, total) avisa qué página empieza;
    * seguir() (opcional) devuelve false cuando ya no hace falta seguir (p. ej. el usuario cambió de archivo).
    * Si una página no se puede dibujar, rechaza diciendo cuál y por qué. El documento de pdf.js se cierra siempre. */
-  PP.renderPages = function (arrayBuffer, onPage, seguir) {
+  PP.renderPages = function (arrayBuffer, onPage, seguir, seleccion) {
     var doc = null;
     return PP.load().then(function (lib) {
       return lib.getDocument({ data: arrayBuffer }).promise.catch(function (e) { throw abrirError(e); });
@@ -101,7 +175,7 @@
           });
         };
       };
-      for (var i = 1; i <= n; i++) chain = chain.then(paso(i));
+      for (var i = 1; i <= n; i++) if (!seleccion || seleccion.indexOf(i) >= 0) chain = chain.then(paso(i));
       return chain.then(function () { return { total: n, pages: out }; });
     }).then(function (res) {
       cerrar(doc);
@@ -147,6 +221,8 @@
     var completo = errors.length === 0;
     return {
       ok: completo && texts.length > 0,
+      engine: completo && (results || []).every(function (r) { return r && r.engine === 'capa_texto'; }) ? 'capa_texto' : 'pdf_pages',
+      confidence: null,
       raw_text: texts.join('\n\f'),
       pages: layout,
       page_count: leidas,

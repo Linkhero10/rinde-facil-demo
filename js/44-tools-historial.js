@@ -8,7 +8,11 @@
   var KEEP = 400;
   var KINDS = { gasto: 'Gastos', drive: 'Drive', respaldo: 'Respaldos', documento: 'Documentos', ficha: 'Fichas', sync: 'Entre equipos', proyecto: 'Proyectos', f29: 'F29' };
 
-  function who() { try { var m = RF.vault && RF.vault.meta && RF.vault.meta(); return (m && (m.display || m.user)) || 'Este equipo'; } catch (e) { return 'Este equipo'; } }
+  function who() {
+    if (RF.auth && RF.auth.esGoogle && RF.auth.esGoogle()) return 'Comunidad';
+    try { var m = RF.vault && RF.vault.meta && RF.vault.meta(), label = m && (m.display || m.user); return label && !/@/.test(label) ? label : 'Este equipo'; }
+    catch (e) { return 'Este equipo'; }
+  }
   function log(kind, text, ref) {
     if (!text || !RF.store) return;
     try {
@@ -31,7 +35,7 @@
       all.slice(0, 150).forEach(function (a) {
         var d = new Date(a.t), day = d.toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' });
         if (day !== lastDay) { lastDay = day; list.appendChild(h('h3', { class: 'grp' }, day.replace(/^./, function (c) { return c.toUpperCase(); }))); ul = h('ul', { class: 'cal-list' }); list.appendChild(ul); }
-        ul.appendChild(h('li', { class: 'cal-ev' }, h('span', { class: 'cal-dot', title: KINDS[a.kind] || a.kind }), h('span', { class: 'cal-ev-t' }, h('strong', null, d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) + ' · '), a.who + ': ' + a.text, a.ref && RF.tools[a.ref] ? [' ', h('a', { href: '#/h/' + a.ref }, 'Abrir')] : null)));
+        ul.appendChild(h('li', { class: 'cal-ev' }, h('span', { class: 'cal-dot', title: KINDS[a.kind] || a.kind }), h('span', { class: 'cal-ev-t' }, h('strong', null, d.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) + ' · '), (/@/.test(a.who || '') ? 'Comunidad' : a.who) + ': ' + a.text, a.ref && RF.tools[a.ref] ? [' ', h('a', { href: '#/h/' + a.ref }, 'Abrir')] : null)));
       });
       if (all.length > 150) list.appendChild(h('p', { class: 'hint' }, 'Se muestran los últimos 150 de ' + all.length + '.'));
     }

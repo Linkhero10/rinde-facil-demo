@@ -1,11 +1,40 @@
-/* Rinde Fácil — panel del Organismo Colaborador: acceso, comunidades, detalle, códigos de activación, entrada asistida, notas y registro.
- * Solo se muestra con sesión del Organismo (su clave se deriva en el navegador; el servicio nunca recibe la clave).
+/* Rinde Fácil — panel del Organismo Colaborador: acceso, comunidades, detalle, códigos de primer ingreso, entrada asistida, notas y registro.
+ * Solo se muestra con sesión del Organismo, que ingresa con Google.
  * Los datos vienen del servicio central (acciones panel* de backend/Organismo.gs). Sin servicio conectado no se muestran cifras. */
 (function (root) {
   'use strict';
   var RF = root.RF = root.RF || {};
   var U = RF.util, UI = RF.ui, h = U.h, E = RF.estado;
   var org = RF.organismo = RF.organismo || {};
+  var entregas = [];
+  var cacheVistas = {}, cargas = {}, borradores = {}, limpiarFormularios = [];
+  var plantillaCache = null, plantillaPendiente = null, sesionVersion = 0, vistaVersion = 0;
+  function limpiarPanel() {
+    sesionVersion++; vistaVersion++;
+    limpiarFormularios.forEach(function (limpiar) { limpiar(); });
+    Object.keys(borradores).forEach(function (key) {
+      var b = borradores[key];
+      Object.keys(b).forEach(function (campo) { b[campo] = null; });
+    });
+    cacheVistas = {}; cargas = {}; borradores = {}; limpiarFormularios = [];
+    plantillaCache = null; plantillaPendiente = null;
+  }
+  function borrarEntregas() { entregas.slice().forEach(function (borrar) { borrar(); }); }
+  function entregaSecreta(node, texto) {
+    var copy = h('button', { type: 'button', class: 'btn primary' }, 'Copiar mensaje');
+    var close = h('button', { type: 'button', class: 'btn ghost' }, 'Cerrar mensaje');
+    function borrar() {
+      texto = '';
+      node.querySelectorAll('textarea, input').forEach(function (n) { n.value = ''; });
+      // También se limpian los nodos retenidos por quien cerró la vista.
+      Array.from(node.children).forEach(function (n) { if ('value' in n) n.value = ''; n.textContent = ''; });
+      U.clear(node);
+      entregas = entregas.filter(function (fn) { return fn !== borrar; });
+    }
+    copy.onclick = function () { U.copyText(texto).then(function (ok) { if (ok) borrar(); else copy.textContent = 'Seleccione el mensaje y cópielo.'; }); };
+    close.onclick = borrar;
+    node.appendChild(copy); node.appendChild(close); entregas.push(borrar);
+  }
 
   org.rol = null;    /* 'organismo' con sesión; si no, null */
   org.token = null;  /* sesión del Organismo: solo en memoria, nunca en el almacenamiento del navegador */
@@ -14,22 +43,27 @@
 
   org.esOrganismo = function () { return org.rol === 'organismo' && !!org.token; };
 
-  /* comunidad de esta dirección: «ejemplo.localhost» o «ejemplo.rinde-facil.cl» → «ejemplo»; si no, null (sitio de acceso) */
+  /* La ruta identifica la comunidad. No decodificar ni normalizar «..» antes de validarla.
+     Sólo en pruebas locales se conserva «subdominio.localhost/». */
   org.inquilinoDeHost = function () {
-    var host = (root.location && root.location.hostname) || '';
-    var m = /^([a-z0-9-]+)\.(localhost|rinde-facil\.cl)$/.exec(host);
+    var loc = root.location || {}, segment = (loc.pathname || '/').split('/')[1] || '';
+    if (segment) return /^[a-z0-9-]+$/i.test(segment) ? segment.toLowerCase() : null;
+    if (loc.pathname && loc.pathname !== '/') return null;
+    var m = /^([a-z0-9-]+)\.localhost$/.exec((loc.hostname || '').toLowerCase());
     return m && m[1] !== 'www' ? m[1] : null;
   };
   /* dirección de la comunidad, para abrir su sitio desde el panel */
   org.urlComunidad = function (id) {
-    var local = /localhost$/.test((root.location && root.location.hostname) || '');
+    id = String(id || '').toLowerCase();
+    if (!/^[a-z0-9-]+$/.test(id)) throw new Error('Comunidad inválida.');
+    var local = /(^|\.)localhost$/.test((root.location && root.location.hostname) || '');
     var port = (root.location && root.location.port) ? ':' + root.location.port : '';
-    return local ? 'http://' + id + '.localhost' + port + '/' : 'https://' + id + '.rinde-facil.cl/';
+    return local ? 'http://' + id + '.localhost' + port + '/' : 'https://rinde-facil.web.app/' + id;
   };
 
   var SECCIONES = [
     { id: 'comunidades', label: 'Comunidades', icon: 'list', ruta: '#/o/comunidades' },
-    { id: 'codigos', label: 'Códigos de activación', icon: 'shield', ruta: '#/o/codigos' },
+    { id: 'codigos', label: 'Códigos de primer ingreso', icon: 'shield', ruta: '#/o/codigos' },
     { id: 'notas', label: 'Notas', icon: 'file', ruta: '#/o/notas' },
     { id: 'registro', label: 'Registro de cambios', icon: 'calendar', ruta: '#/o/registro' }
   ];
@@ -37,10 +71,10 @@
 
   function mensajeError(code) {
     var m = {
-      SESION_INVALIDA: 'Tu sesión venció. Vuelve a entrar.',
-      SESION_CERRADA: 'La sesión del panel se cerró. Vuelve a entrar.',
+      SESION_INVALIDA: 'Su sesión venció. Vuelva a entrar.',
+      SESION_CERRADA: 'La sesión del panel se cerró. Vuelva a entrar.',
       CREDENCIALES_INVALIDAS: 'La clave no es correcta.',
-      BLOQUEADO: 'Demasiados intentos. Espera un rato.',
+      BLOQUEADO: 'Demasiados intentos. Espere un momento.',
       INQUILINO_INEXISTENTE: 'Esa comunidad no está en el registro.',
       SIN_COPIA: 'Esa comunidad todavía no tiene datos guardados.',
       CONFLICTO: 'Alguien guardó cambios antes que tú. Recarga y vuelve a intentar.',
@@ -52,13 +86,16 @@
 
   /* ---------- acceso del Organismo ---------- */
   function conectar(url, token) {
+    limpiarPanel();
     org.url = url;
     org.token = token;
     org.rol = 'organismo';
+    var version = sesionVersion;
     var post = function (accion, datos) {
       /* el token vive solo en org.token: al cerrar se borra y estas llamadas (también las guardadas en los closures) fallan */
-      if (!org.token) return Promise.reject(Object.assign(new Error(mensajeError('SESION_CERRADA')), { code: 'SESION_CERRADA' }));
+      if (!org.token || version !== sesionVersion) return Promise.reject(Object.assign(new Error(mensajeError('SESION_CERRADA')), { code: 'SESION_CERRADA' }));
       return RF.cloud.postRawTo(org.url, accion, Object.assign({ t: org.token }, datos || {})).then(function (r) {
+        if (version !== sesionVersion) throw Object.assign(new Error(mensajeError('SESION_CERRADA')), { code: 'SESION_CERRADA' });
         if (!r || r.ok !== true) throw Object.assign(new Error(mensajeError(r && r.error)), { code: r && r.error });
         return r;
       });
@@ -72,9 +109,12 @@
           return r.cambios.map(function (c) { return { t: c.t, texto: (c.seccion ? c.seccion + ': ' : '') + (c.resumen || 'Cambio'), comunidad: id }; })
             .concat(r.accesos.map(function (a) { return { t: a.t, texto: textoAcceso(a.tipo), comunidad: id }; }));
         });
-        return org.fuente.comunidades().then(function (lista) {
+        return Promise.all([post('panelRegistro'), org.fuente.comunidades()]).then(function (info) {
+          var lista = info[1], globales = info[0].cambios.map(function (c) {
+            return { t: c.t, texto: typeof c.activo === 'boolean' ? 'Envío desde la cuenta del Organismo: ' + (c.activo ? 'activado' : 'desactivado') : 'Configuración actualizada' };
+          });
           return Promise.all(lista.slice(0, 50).map(function (c) { return org.fuente.registro(c.id).then(function (x) { return x.map(function (e) { return Object.assign(e, { comunidad: c.nombre }); }); }); }))
-            .then(function (partes) { return [].concat.apply([], partes).sort(function (a, b) { return String(b.t).localeCompare(String(a.t)); }); });
+            .then(function (partes) { return globales.concat([].concat.apply([], partes)).sort(function (a, b) { return String(b.t).localeCompare(String(a.t)); }); });
         });
       },
       codigos: function () {
@@ -82,7 +122,7 @@
           var vigentes = x[1].codigos.filter(function (c) { return c.vigente; });
           return x[0].inquilinos.map(function (i) {
             var v = vigentes.filter(function (c) { return c.inquilino === i.id; })[0];
-            return { id: i.id, nombre: i.nombre, estado: i.estado === 'activa' ? 'activa' : (v ? 'sin_activar' : 'sin_codigo'), vence: v ? v.vence : '' };
+            return { id: i.id, nombre: i.nombre, correo: i.correo, estado: i.estado === 'activa' ? 'activa' : (v ? 'sin_activar' : 'sin_codigo'), vence: v ? v.vence : '' };
           });
         });
       },
@@ -92,34 +132,45 @@
     org.ticket = function (id) { return post('panelTicket', { inquilino: id }); };
     org.guardarNota = function (nota) { return post('panelNotaGuardar', nota); };
     org.borrarNota = function (id) { return post('panelNotaBorrar', { id: id }); };
-    org.crearComunidad = function (nombre, rut) { return post('panelInquilinoCrear', { nombre: nombre, rut: rut }); };
+    org.crearComunidad = function (nombre, correo, rut, enviar, mensaje) {
+      return post('panelInquilinoCrear', { nombre: nombre, correo: correo, rut: rut, enviar: enviar === true, mensaje: mensaje });
+    };
+    org.reenviarCodigo = function (id, enviar, mensaje) { return post('panelReenviarCodigo', { inquilino: id, enviar: enviar === true, mensaje: mensaje }); };
+    org.plantillaCorreo = function () {
+      if (version !== sesionVersion) return Promise.reject({ code: 'SESION_CERRADA' });
+      if (plantillaCache) return Promise.resolve(plantillaCache);
+      if (!plantillaPendiente) plantillaPendiente = post('panelPlantillaCorreo').then(function (r) {
+        plantillaCache = r; plantillaPendiente = null; return r;
+      }, function (e) { if (version === sesionVersion) plantillaPendiente = null; throw e; });
+      return plantillaPendiente;
+    };
+    org.guardarCorreo = function (id, correo) { return post('panelInquilinoActualizar', { inquilino: id, correo: correo }); };
     return org.token;
   }
   function textoAcceso(tipo) {
-    return { activacion: 'Una comunidad activó su cuenta', activacion_fallida: 'Intento fallido de activación', codigo_emitido: 'Se generó un código de activación',
-      ticket_emitido: 'El Organismo pidió entrar a la cuenta', entrada_asistida: 'El Organismo entró a la cuenta de la comunidad', ticket_rechazado: 'Un ticket fue rechazado' }[tipo] || tipo;
+    return { activacion: 'Una comunidad activó su cuenta', activacion_fallida: 'Intento fallido de activación', codigo_emitido: 'Se generó un Código de primer ingreso',
+      ticket_emitido: 'El Organismo pidió entrar a la cuenta', entrada_asistida: 'El Organismo entró a la cuenta de la comunidad', ticket_rechazado: 'Un ticket fue rechazado', organismo_desbloqueo: 'El Organismo desbloqueó el acceso de la comunidad' }[tipo] || tipo;
   }
 
-  /* El Organismo entra con su clave: primero se piden la sal y las iteraciones, luego se deriva la clave en el navegador. */
-  org.entrar = function (clave, url, correo) {
+  org.entrarConGoogle = function (url) {
     var u = url || (RF.cloud.approvedUrls && RF.cloud.approvedUrls()[0]);
     if (!u) return Promise.reject(Object.assign(new Error('El servicio central no está configurado en esta versión.'), { code: 'SIN_SERVICIO' }));
-    return RF.cloud.postRawTo(u, 'challenge', { organismo: true }).then(function (ch) {
-      if (!ch || ch.ok !== true || ch.exists !== true) throw Object.assign(new Error('La cuenta del Organismo todavía no está creada en el servicio.'), { code: 'SIN_CUENTA' });
-      return RF.crypto.deriveKeys(clave, ch.saltP, ch.it).then(function (k) {
-        return RF.cloud.postRawTo(u, 'loginOrganismo', { user: correo, authKey: k.authKey });
-      });
-    }).then(function (r) {
-      /* el servicio sin acceso del Organismo (versión anterior) rechaza la acción como sesión vencida: se dice la causa real */
-      if (r && r.error === 'SESION_INVALIDA') throw Object.assign(new Error('El servicio conectado es una versión anterior y todavía no tiene el acceso del Organismo. No es un problema de tu clave: hay que actualizar el servicio.'), { code: 'SERVICIO_ANTIGUO' });
-      if (!r || r.ok !== true) throw Object.assign(new Error(mensajeError(r && r.error)), { code: r && r.error, retryAfter: r && r.retryAfter });
+    if (!RF.googleOrganismo || !RF.googleOrganismo.configured()) return Promise.reject(Object.assign(new Error('El ingreso con Google todavía no está configurado.'), { code: 'GOOGLE_SIN_CONFIGURAR' }));
+    return RF.googleOrganismo.enter(u).then(function (r) {
+      if (!r || r.ok !== true || !r.token) throw Object.assign(new Error('Ingreso rechazado.'), { code: 'INGRESO_GOOGLE_RECHAZADO' });
       conectar(u, r.token);
       return true;
+    }).catch(function (e) {
+      var code = e && e.code;
+      var message = code === 'INGRESO_GOOGLE_RECHAZADO' ? 'Esa cuenta de Google no es la del Organismo Colaborador.' :
+        (code === 'GOOGLE_SIN_CONFIGURAR' ? 'El ingreso con Google todavía no está configurado.' : 'No se pudo entrar con Google. Revisa la conexión e inténtalo de nuevo.');
+      throw Object.assign(new Error(message), { code: code });
     });
   };
   /* cerrar: el token se borra de este equipo y se revoca en el servicio (acción logout, la misma de las demás sesiones).
      Si el servicio no confirma, la sesión caduca sola y se avisa. */
   org.cerrar = function () {
+    borrarEntregas(); limpiarPanel();
     var url = org.url, token = org.token;
     org.rol = null; org.token = null; org.url = null; org.fuente = null;
     if (!token || !url) return Promise.resolve({ ok: true, skipped: true });
@@ -134,27 +185,19 @@
   /* pantalla de acceso del Organismo (en el sitio principal, sin comunidad) */
   org.pantallaAcceso = function (onOk) {
     var err = h('p', { class: 'auth-error', role: 'alert' });
-    /* el correo y la clave los escribe quien entra: nada viene precargado en la página pública */
-    var correo = h('input', { type: 'email', autocomplete: 'username', required: true, 'aria-label': 'Correo del Organismo' });
-    var input = h('input', { type: 'password', autocomplete: 'current-password', required: true, 'aria-label': 'Clave del Organismo' });
-    /* botón para ver lo que se escribe, como en el acceso de la comunidad */
-    var ver = h('button', { type: 'button', class: 'linklike', 'aria-label': 'Mostrar la clave' }, 'Mostrar');
-    ver.onclick = function () { var oculta = input.type === 'password'; input.type = oculta ? 'text' : 'password'; ver.textContent = oculta ? 'Ocultar' : 'Mostrar'; ver.setAttribute('aria-label', oculta ? 'Ocultar la clave' : 'Mostrar la clave'); };
-    var boton = h('button', { type: 'submit', class: 'btn primary big' }, 'Entrar al panel');
-    var form = h('form', { class: 'auth-form', novalidate: true, onsubmit: function (ev) {
-      ev.preventDefault(); err.textContent = '';
-      if (!correo.value.trim()) { err.textContent = 'Escribe el correo del Organismo.'; return; }
-      if (!input.value) { err.textContent = 'Escribe la clave del Organismo.'; return; }
-      boton.disabled = true; boton.textContent = 'Entrando…';
-      org.entrar(input.value, undefined, correo.value.trim()).then(function () { onOk(); }, function (e) {
-        err.textContent = e && (e.code === 'SIN_CUENTA' || e.code === 'SERVICIO_ANTIGUO') ? e.message : mensajeError(e && e.code) + (e && e.retryAfter ? ' Vuelve a intentar en ' + Math.ceil(e.retryAfter / 60) + ' min.' : '');
-        boton.disabled = false; boton.textContent = 'Entrar al panel';
-      });
-    } }, h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Correo del Organismo'), correo),
-      h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Clave'), h('span', { class: 'clave-campo' }, input, ver)), err, boton,
-      h('button', { type: 'button', class: 'linklike', onclick: function () { org.mostrarAcceso = false; if (/^#\/?o(\/|\?|$)/.test(location.hash || '')) location.hash = '#/'; else if (RF.app) RF.app.render(); } }, 'Volver'));
+    var volver = h('button', { type: 'button', class: 'linklike', onclick: function () {
+      org.mostrarAcceso = false;
+      if (/^#\/?o(\/|\?|$)/.test(location.hash || '')) location.hash = '#/';
+      else if (RF.app) RF.app.render();
+    } }, 'Volver');
+    var google = h('button', { type: 'button', class: 'btn big', onclick: function () {
+      if (google.disabled) return;
+      google.disabled = true; err.textContent = '';
+      org.entrarConGoogle().then(function () { onOk(); }).catch(function (e) { err.textContent = e.message; })
+        .finally(function () { google.disabled = false; });
+    } }, 'Entrar con Google');
     return h('div', { class: 'view auth-view panel-org' }, h('header', { class: 'panel-head' }, h('h1', { class: 'tool-title' }, 'Panel del Organismo Colaborador'),
-      h('p', { class: 'lead' }, 'Para ver las comunidades. Si tu comunidad quiere rendir, entra desde el sitio de tu comunidad.')), form);
+      h('p', { class: 'lead' }, 'Acceda para ver las comunidades. Para preparar una rendición, ingrese desde el sitio de su comunidad.')), h('div', { class: 'auth-form' }, err, google, volver));
   };
 
   /* ---------- barra lateral del panel ---------- */
@@ -213,6 +256,104 @@
     datos.forEach(function (d) { if (d.ev) cuenta[d.ev.estado.id] = (cuenta[d.ev.estado.id] || 0) + 1; });
     return cuenta;
   }
+  /* Plantilla y borradores viven en memoria hasta cerrar la sesión. */
+  function formularioCorreo(inquilino, alCrear, alEmitir) {
+    var version = sesionVersion, key = inquilino ? 'comunidad:' + inquilino.id : 'nueva';
+    var b = borradores[key];
+    if (!b) b = borradores[key] = { nombre: inquilino ? inquilino.nombre : '', correo: inquilino ? inquilino.correo : '',
+      enviar: true, texto: '', editado: false, final: '', estado: '', ocupado: false };
+    var nombre = h('input', { type: 'text', required: true, minlength: 3, maxlength: 80, 'aria-label': 'Nombre' });
+    var correo = h('input', { type: 'email', required: true, maxlength: 120, 'aria-label': 'Correo de la comunidad' });
+    nombre.value = b.nombre || ''; correo.value = b.correo || '';
+    var enviar = h('input', { type: 'checkbox', checked: b.enviar });
+    enviar.checked = b.enviar;
+    var texto = h('textarea', { rows: 15, 'aria-label': 'Mensaje de bienvenida' }); texto.value = b.texto;
+    var aviso = h('p', { class: 'nota-accion' });
+    var resultado = h('div', { class: 'nota-accion', role: 'status' }, b.estado);
+    var boton = h('button', { type: 'submit', class: 'btn primary' }, inquilino ? 'Reenviar código' : 'Generar código y completar mensaje');
+    var restablecer = h('button', { type: 'button', class: 'btn ghost small' }, 'Restablecer plantilla');
+    var copiar = h('button', { type: 'button', class: 'btn primary small' }, 'Copiar mensaje');
+    var plantillaActual = plantillaCache;
+    var codigoPendiente = '(se generará al crear la comunidad)', vencePendiente = '(se fija al generar el código)';
+    function vigente() { return version === sesionVersion; }
+    function sincronizar() {
+      boton.disabled = !vigente() || !plantillaActual || b.ocupado;
+      restablecer.disabled = !vigente() || !plantillaActual || b.ocupado;
+    }
+    function errorTexto(e) {
+      return { CORREO_INVALIDO: 'Escriba un correo válido de hasta 120 caracteres.', CORREO_EXISTENTE: 'Ese correo ya está registrado en otra comunidad.',
+        DATOS_INVALIDOS: 'Revise el nombre y el correo de la comunidad.', INQUILINO_EXISTENTE: 'Ya existe una comunidad con ese identificador.' }[e && e.code] || mensajeError(e && e.code);
+    }
+    function actualizar() {
+      if (!vigente()) return;
+      b.nombre = nombre.value; b.correo = correo.value; b.enviar = enviar.checked;
+      if (plantillaActual && !b.editado && !b.final) {
+        var valores = { nombre: b.nombre, correo: b.correo, codigo: codigoPendiente, vence: vencePendiente };
+        b.texto = plantillaActual.cuerpo.replace(/\{(nombre|correo|codigo|vence)\}/g, function (_, campo) { return valores[campo] || ''; });
+        texto.value = b.texto;
+      }
+    }
+    nombre.oninput = correo.oninput = enviar.onchange = actualizar;
+    texto.oninput = function () { if (vigente()) { b.texto = texto.value; b.editado = true; } };
+    restablecer.onclick = function () {
+      if (!vigente() || !plantillaActual || b.ocupado) return;
+      b.editado = false;
+      if (b.final) { b.texto = b.final; texto.value = b.final; }
+      else actualizar();
+    };
+    copiar.onclick = function () {
+      if (!vigente()) return;
+      U.copyText(texto.value).then(function (ok) {
+        if (vigente()) aviso.textContent = ok ? 'Mensaje copiado.' : 'Seleccione el mensaje y cópielo.';
+      });
+    };
+    var form = h('form', { class: 'nota-form org-correo-form', onsubmit: function (ev) {
+      ev.preventDefault();
+      if (!vigente() || boton.disabled || b.ocupado) return;
+      actualizar();
+      if (!inquilino && (!nombre.value.trim() || !correo.value.trim())) { resultado.textContent = 'Complete el nombre y el correo de la comunidad.'; return; }
+      b.ocupado = true; sincronizar(); b.estado = resultado.textContent = 'Emitiendo el Código de primer ingreso…';
+      // La vista previa no reemplaza los marcadores que necesita el servidor.
+      var mensaje = b.editado ? texto.value.split(codigoPendiente).join('{codigo}').split(vencePendiente).join('{vence}') : plantillaActual.cuerpo;
+      var peticion = inquilino ? org.reenviarCodigo(inquilino.id, enviar.checked, mensaje)
+        : org.crearComunidad(nombre.value, correo.value, null, enviar.checked, mensaje);
+      peticion.then(function (r) {
+        if (!vigente()) { r.mensajeListo = ''; return; }
+        b.final = b.texto = r.mensajeListo; texto.value = b.texto;
+        b.estado = r.enviado ? 'El código ya fue enviado por correo. Puede copiar el mensaje completo.' :
+          (r.error === 'ENVIO_FALLIDO' ? 'No se pudo enviar el correo. Copie el mensaje y envíelo desde su correo institucional.' : 'Código generado. Copie el mensaje para enviarlo desde su correo institucional.');
+        resultado.textContent = b.estado; b.ocupado = false;
+        r.mensajeListo = ''; r.codigo = '';
+        if (!inquilino && b.alCrear) b.alCrear(r.inquilino);
+        if (alEmitir) alEmitir(r);
+        b.actualizarVista();
+      }, function (e) {
+        if (!vigente()) return;
+        b.ocupado = false; b.estado = resultado.textContent = errorTexto(e); b.actualizarVista();
+      });
+    } });
+    if (!inquilino) {
+      form.appendChild(h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Nombre'), nombre));
+      form.appendChild(h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Correo de la comunidad'), correo));
+    }
+    form.appendChild(h('label', { class: 'org-correo-opcion' }, enviar, h('span', null, 'Enviar correo de bienvenida desde la cuenta del Organismo')));
+    form.appendChild(aviso);
+    form.appendChild(h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Mensaje de bienvenida'), texto));
+    form.appendChild(h('div', { class: 'acciones' }, copiar, restablecer, boton)); form.appendChild(resultado);
+    b.alCrear = alCrear;
+    b.actualizarVista = function () { texto.value = b.texto; resultado.textContent = b.estado; sincronizar(); };
+    limpiarFormularios.push(function () {
+      nombre.value = ''; correo.value = ''; texto.value = ''; resultado.textContent = ''; aviso.textContent = '';
+      enviar.checked = false; boton.disabled = true; copiar.disabled = true; restablecer.disabled = true;
+    });
+    sincronizar();
+    if (plantillaActual) actualizar();
+    else Promise.resolve().then(function () { return org.plantillaCorreo(); }).then(function (r) {
+      if (!vigente()) return;
+      plantillaActual = r; actualizar(); sincronizar();
+    }, function (e) { if (vigente()) aviso.textContent = errorTexto(e); });
+    return form;
+  }
   function vistaComunidades(datos) {
     var cuenta = resumenEstados(datos), orden = Object.keys(E.ESTADOS).sort(function (a, b) { return E.ESTADOS[a].orden - E.ESTADOS[b].orden; });
     /* cada cifra de arriba es un filtro: al tocarla se ven solo las comunidades de ese estado; otra vez, se quita el filtro */
@@ -222,7 +363,7 @@
       if (!d.ev) return h('li', null, h('div', { class: 'com-fila sin-copia' }, h('div', { class: 'com-cab' }, h('strong', { class: 'com-nombre' }, d.c.nombre)),
         h('p', { class: 'com-motivo' }, d.error && d.error.code === 'SIN_COPIA' ? 'Sin copia todavía' : mensajeError(d.error && d.error.code))));
       var ev = d.ev, fase = ev.fase ? ev.fase.name : '';
-      return h('li', null, h('a', { class: 'com-fila', href: '#/o/c/' + encodeURIComponent(d.c.id) },
+      return h('li', null, h('a', { class: 'com-fila', href: '#/o/c/' + encodeURIComponent(d.c.id), target: '_blank', rel: 'noopener' },
         h('div', { class: 'com-cab' }, h('strong', { class: 'com-nombre' }, d.c.nombre), pillEstado(ev.estado)),
         h('p', { class: 'com-motivo' }, ev.motivo),
         h('div', { class: 'com-pie' }, h('span', { class: 'com-fase' }, fase),
@@ -240,10 +381,14 @@
         : UI.empty(filtro ? 'Ninguna comunidad está en ese estado. Toca la cifra otra vez para ver todas.' : 'Todavía no hay comunidades activas.'));
     }
     pintar();
-    return h('div', { class: 'view panel-org' },
+    var vista = h('div', { class: 'view panel-org' },
       h('header', { class: 'panel-head' }, h('h1', { class: 'tool-title' }, 'Comunidades'),
         h('p', { class: 'lead' }, 'Cada comunidad, con su estado según el Manual de Rendición. Toca una cifra para filtrar; toca una comunidad para ver su desglose.')),
-      tiraEl, listaEl);
+      h('section', { class: 'panel-sec' }, h('h2', { class: 'card-title' }, 'Nueva comunidad'), formularioCorreo(null, function (c) {
+        datos.push({ c: c, ev: null, error: { code: 'SIN_COPIA' } }); pintar();
+      })), tiraEl, listaEl);
+    vista.actualizarDatos = function (nuevos) { datos = nuevos; cuenta = resumenEstados(datos); pintar(); };
+    return vista;
   }
 
   function vistaDetalle(d) {
@@ -270,17 +415,31 @@
     btnTicket.onclick = function () {
       btnTicket.disabled = true; mensaje.textContent = 'Pidiendo el acceso…';
       org.ticket(c.id).then(function (r) {
-        /* sin 'noopener' el navegador devuelve la pestaña, y así se sabe si se abrió; luego se corta el vínculo con el panel */
-        var w = root.open(org.urlComunidad(c.id) + '#ticket=' + encodeURIComponent(r.ticket), '_blank');
-        if (w) { try { w.opener = null; } catch (e) { /* el navegador no deja cambiarlo: la pestaña sigue abierta */ } }
-        mensaje.textContent = w ? 'Se abrió su sitio. El acceso dura dos minutos y se usa una sola vez. Queda registrado.' : 'Tu navegador bloqueó la pestaña. Permite ventanas emergentes para este sitio.';
+        root.open(org.urlComunidad(c.id) + '#ticket=' + encodeURIComponent(r.ticket), '_blank', 'noopener');
+        /* Con noopener, null no permite saber si el navegador bloqueó la pestaña. */
+        mensaje.textContent = 'Se solicitó abrir su sitio. Si no aparece, permita ventanas emergentes para este sitio. El acceso dura dos minutos y se usa una sola vez. Queda registrado.';
         btnTicket.disabled = !activa;
       }, function (e) { mensaje.textContent = mensajeError(e && e.code); btnTicket.disabled = !activa; });
     };
     zonaAccion.appendChild(btnTicket);
+    var correoComunidad = h('input', { type: 'email', required: true, maxlength: 120, 'aria-label': 'Correo de la comunidad' });
+    correoComunidad.value = c.correo || '';
+    var estadoCorreo = h('p', { class: 'nota-accion', role: 'status' });
+    var guardarCorreo = h('button', { type: 'button', class: 'btn' }, 'Guardar correo');
+    guardarCorreo.onclick = function () {
+      guardarCorreo.disabled = true;
+      org.guardarCorreo(c.id, correoComunidad.value).then(function (r) {
+        c.correo = r.inquilino.correo; correoComunidad.value = c.correo;
+        estadoCorreo.textContent = 'Correo guardado'; guardarCorreo.disabled = false;
+      }, function (e) {
+        estadoCorreo.textContent = { CORREO_INVALIDO: 'Escriba un correo válido de hasta 120 caracteres.', CORREO_EXISTENTE: 'Ese correo ya está registrado en otra comunidad.' }[e && e.code] || mensajeError(e && e.code);
+        guardarCorreo.disabled = false;
+      });
+    };
     return h('div', { class: 'view panel-org' },
       h('a', { class: 'btn ghost small back', href: '#/o/comunidades' }, UI.icon('left', 16), 'Comunidades'),
       h('header', { class: 'panel-head' }, h('h1', { class: 'tool-title' }, c.nombre), h('div', { class: 'det-estado' }, pillEstado(ev.estado), h('span', { class: 'det-motivo' }, ev.motivo))),
+      h('section', { class: 'panel-sec' }, h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Correo de la comunidad'), correoComunidad), guardarCorreo, estadoCorreo),
       h('div', { class: 'kpi-tira' },
         h('div', { class: 'kpi' }, h('span', { class: 'kpi-n' }, pctTexto(ev.presupuesto.porcentaje)), h('span', { class: 'kpi-t' }, 'Presupuesto rendido'), barra(ev.presupuesto.porcentaje)),
         h('div', { class: 'kpi' }, h('span', { class: 'kpi-n' }, String(abiertas.length)), h('span', { class: 'kpi-t' }, 'Observaciones sin responder')),
@@ -288,7 +447,7 @@
       h('section', { class: 'panel-sec', id: 'sec-presupuesto' }, h('h2', { class: 'card-title' }, 'Presupuesto por cuenta'), graficoCuentas(d.estado || { projects: [] })),
       h('section', { class: 'panel-sec', id: 'sec-proyectos' }, h('h2', { class: 'card-title' }, 'Proyectos'), proyectos),
       h('section', { class: 'panel-sec', id: 'sec-observaciones' }, h('h2', { class: 'card-title' }, 'Observaciones de CORFO'), obsBox),
-      h('section', { class: 'panel-sec', id: 'sec-acciones' }, h('h2', { class: 'card-title' }, 'Acciones'), zonaAccion, mensaje,
+      h('section', { class: 'panel-sec', id: 'sec-acciones' }, h('h2', { class: 'card-title' }, 'Acciones'), zonaAccion, mensaje, formularioCorreo(c),
         h('p', { class: 'nota-accion' }, 'Entrar a su cuenta pide un acceso de un solo uso que dura dos minutos y queda registrado. La comunidad sigue pidiendo su clave en su propio sitio.')),
       h('details', { class: 'panel-sec panel-det' }, h('summary', { class: 'card-title' }, 'Registro de cambios de esta comunidad'), registro));
   }
@@ -298,29 +457,45 @@
     var filas = codigos.map(function (c) {
       /* el backend decide el tipo: alta si la comunidad está pendiente, reinicio si ya está activa (para recuperar su acceso) */
       var activa = c.estado === 'activa';
-      var btn = h('button', { type: 'button', class: 'btn small' }, activa ? 'Generar código de reinicio' : 'Generar código de activación');
+      var generar = h('button', { type: 'button', class: 'btn small' }, activa ? 'Generar código de reinicio' : 'Generar Código de primer ingreso');
+      var btn = h('button', { type: 'button', class: 'btn small' }, 'Reenviar código');
+      var zonaCorreo = h('div');
       var tdEstado = h('td', null, ETIQUETA_CODIGO[c.estado] || c.estado), tdVence = h('td', null, fechaTexto(c.vence));
-      btn.onclick = function () {
-        /* un código de reinicio deja sin efecto los anteriores de la comunidad: se pide confirmar antes (mismo recurso que al borrar una nota) */
+      generar.onclick = function () {
         if (activa && !(root.confirm && root.confirm('¿Generar un código de reinicio para ' + c.nombre + '? Sirve una sola vez, vence a los 30 días y deja sin efecto los códigos anteriores de esta comunidad.'))) return;
-        btn.disabled = true; mensaje.textContent = 'Generando…';
+        generar.disabled = true; mensaje.textContent = 'Generando…';
         org.generarCodigo(c.id).then(function (r) {
-          mensaje.innerHTML = '';
+          U.clear(mensaje);
           mensaje.appendChild(h('strong', { class: 'codigo-una-vez' }, r.codigo));
           mensaje.appendChild(document.createTextNode(' · Cópialo ahora: solo se muestra una vez. Vence el ' + fechaTexto(r.vence) + ' y sirve una sola vez para ' + c.nombre + (activa ? ' (reinicio de la cuenta).' : '.')));
-          /* la fila refleja el código nuevo sin recargar; el anterior queda sin efecto. Una comunidad activa sigue activa */
+          entregaSecreta(mensaje, r.codigo); r.codigo = '';
           if (!activa) tdEstado.textContent = ETIQUETA_CODIGO.sin_activar;
           tdVence.textContent = fechaTexto(r.vence);
-          btn.disabled = false;
-        }, function (e) { mensaje.textContent = mensajeError(e && e.code); btn.disabled = false; });
+          generar.disabled = false;
+        }, function (e) { mensaje.textContent = mensajeError(e && e.code); generar.disabled = false; });
       };
-      return h('tr', null, h('td', null, c.nombre), tdEstado, tdVence, h('td', null, btn));
+      btn.onclick = function () {
+        /* un código de reinicio deja sin efecto los anteriores de la comunidad: se pide confirmar antes (mismo recurso que al borrar una nota) */
+        if (activa && !(root.confirm && root.confirm('¿Reenviar un código de reinicio para ' + c.nombre + '? Sirve una sola vez, vence a los 30 días y deja sin efecto los códigos anteriores de esta comunidad.'))) return;
+        U.clear(zonaCorreo);
+        zonaCorreo.appendChild(formularioCorreo(c, null, function (r) {
+          if (!activa) tdEstado.textContent = ETIQUETA_CODIGO.sin_activar;
+          tdVence.textContent = fechaTexto(r.vence);
+        }));
+      };
+      var desbloquear = h('button', { type: 'button', class: 'btn small', onclick: function () {
+        desbloquear.disabled = true;
+        org.post('panelDesbloquearComunidad', { inquilino: c.id }).then(function () {
+          mensaje.textContent = 'Acceso desbloqueado. La acción quedó registrada.';
+        }, function (e) { mensaje.textContent = mensajeError(e && e.code); }).finally(function () { desbloquear.disabled = false; });
+      } }, 'Desbloquear acceso');
+      return h('tr', null, h('td', null, c.nombre), tdEstado, tdVence, h('td', null, generar, btn, activa ? desbloquear : null, zonaCorreo));
     });
     var tabla = codigos.length ? h('div', { class: 'table-scroll' }, h('table', { class: 'plain-grid' },
       h('thead', null, h('tr', null, h('th', null, 'Comunidad'), h('th', null, 'Estado'), h('th', null, 'Vence'), h('th', null, ''))),
       h('tbody', null, filas))) : UI.empty('No hay comunidades cargadas.');
     return h('div', { class: 'view panel-org' },
-      h('header', { class: 'panel-head' }, h('h1', { class: 'tool-title' }, 'Códigos de activación'),
+      h('header', { class: 'panel-head' }, h('h1', { class: 'tool-title' }, 'Códigos de primer ingreso'),
         h('p', { class: 'lead' }, 'Cada código sirve una sola vez y vence a los 30 días. Se muestra completo solo al generarlo; después el servicio guarda únicamente una huella (hash), no el código.')),
       tabla, mensaje);
   }
@@ -341,7 +516,7 @@
     var err = h('p', { class: 'nota-accion', role: 'status' });
     var form = h('form', { class: 'nota-form', onsubmit: function (ev) {
       ev.preventDefault();
-      if (!texto.value.trim()) { err.textContent = 'Escribe la nota.'; return; }
+      if (!texto.value.trim()) { err.textContent = 'Escriba la nota.'; return; }
       org.guardarNota({ inquilino: sel.value || null, texto: texto.value.trim(), estado: 'abierta' }).then(function () { RF.app.render(); }, function (e) { err.textContent = mensajeError(e && e.code); });
     } }, sel, texto, h('button', { type: 'submit', class: 'btn primary' }, 'Agregar nota'), err);
     return h('div', { class: 'view panel-org' },
@@ -363,35 +538,57 @@
   /* ---------- carga y montaje ---------- */
   function cargar(ruta) {
     var f = org.fuente, sub = ruta.sub || 'comunidades';
-    if (sub === 'codigos') return f.codigos().then(vistaCodigos);
-    if (sub === 'registro') return f.registro().then(vistaRegistro);
-    if (sub === 'notas') return f.comunidades().then(function (lista) { return f.notas().then(function (n) { return vistaNotas(n, lista); }); });
+    if (sub === 'codigos') return f.codigos();
+    if (sub === 'registro') return f.registro();
+    if (sub === 'notas') return Promise.all([f.notas(), f.comunidades()]);
     if (sub === 'c' || ruta.id) {
       return f.comunidades().then(function (lista) {
         var c = lista.filter(function (x) { return x.id === ruta.id; })[0];
         if (!c) throw new Error('No encontramos esa comunidad.');
-        return f.estado(c.id).then(function (st) {
-          return f.registro(c.id).then(function (reg) {
-            return vistaDetalle({ c: c, ev: E.evaluarComunidad(st), registro: reg, estado: st });
-          });
+        return Promise.all([f.estado(c.id), f.registro(c.id)]).then(function (datos) {
+          return { c: c, ev: E.evaluarComunidad(datos[0]), registro: datos[1], estado: datos[0] };
         });
       });
     }
     return f.comunidades().then(function (lista) {
-      /* cada comunidad por separado: una sin copia (SIN_COPIA) no rechaza la lista entera */
+      /* Una comunidad sin copia no rechaza la lista entera. */
       return Promise.all(lista.map(function (c) {
-        return f.estado(c.id).then(function (st) { return { c: c, ev: E.evaluarComunidad(st) }; }).catch(function (e) { return { c: c, ev: null, error: e || {} }; });
-      })).then(vistaComunidades);
+        return f.estado(c.id).then(function (st) { return { c: c, ev: E.evaluarComunidad(st) }; })
+          .catch(function (e) { return { c: c, ev: null, error: e || {} }; });
+      }));
     });
   }
-
+  function pintarRuta(ruta, datos) {
+    var sub = ruta.sub || 'comunidades';
+    if (sub === 'codigos') return vistaCodigos(datos);
+    if (sub === 'registro') return vistaRegistro(datos);
+    if (sub === 'notas') return vistaNotas(datos[0], datos[1]);
+    if (sub === 'c' || ruta.id) return vistaDetalle(datos);
+    return vistaComunidades(datos);
+  }
   org.vista = function (ruta) {
+    borrarEntregas();
     if (!org.esOrganismo()) return h('div', { class: 'view' }, UI.callout('bad', 'Esta parte es solo para el Organismo Colaborador.', ''));
-    var host = h('div', { class: 'view panel-org' }, h('p', { class: 'lead' }, 'Cargando…'));
-    cargar(ruta).then(function (vista) { U.clear(host); host.appendChild(vista); }, function (e) {
-      U.clear(host);
+    var version = sesionVersion, montaje = ++vistaVersion, key = (ruta.sub || 'comunidades') + ':' + (ruta.id || '');
+    var guardada = Object.prototype.hasOwnProperty.call(cacheVistas, key), vista;
+    var host = h('div', { class: 'view panel-org' });
+    if (guardada) { vista = pintarRuta(ruta, cacheVistas[key]); host.appendChild(vista); }
+    else host.appendChild(h('p', { class: 'lead' }, 'Cargando…'));
+    if (!cargas[key]) cargas[key] = cargar(ruta).then(function (datos) {
+      if (version === sesionVersion) { cacheVistas[key] = datos; delete cargas[key]; }
+      return datos;
+    }, function (e) { if (version === sesionVersion) delete cargas[key]; throw e; });
+    cargas[key].then(function (datos) {
+      if (version !== sesionVersion || montaje !== vistaVersion) return;
+      if (vista && vista.actualizarDatos) vista.actualizarDatos(datos);
+      else { U.clear(host); vista = pintarRuta(ruta, datos); host.appendChild(vista); }
+    }, function (e) {
+      if (version !== sesionVersion || montaje !== vistaVersion) return;
       if (e && e.code === 'SESION_INVALIDA') { org.cerrar(); if (RF.app) RF.app.render(); return; }
-      host.appendChild(UI.callout('bad', 'No se pudo cargar esta parte del panel.', ' ' + mensajeError(e && e.code) + ' Intenta de nuevo en un momento.'));
+      // Un fallo al refrescar conserva la vista ya disponible.
+      if (guardada) return;
+      U.clear(host);
+      host.appendChild(UI.callout('bad', 'No se pudo cargar esta parte del panel.', ' ' + mensajeError(e && e.code) + ' Intente de nuevo en un momento.'));
     });
     return host;
   };

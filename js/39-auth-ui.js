@@ -98,108 +98,164 @@
       h('label', { class: 'check', for: 'recok' }, ok, h('span', null, 'Ya guardé mi código en un lugar seguro')), go]);
   }
 
-  /* rechazos del servicio al activar: la cuenta no se creó, así que la bóveda de este equipo ya no sirve y se borra */
+  /* Un fallo de transporte conserva la bóveda recién creada para reintentar la misma alta. */
   var RECHAZO_ALTA = /^(CODIGO_INVALIDO|DATOS_INVALIDOS|BLOQUEADO|INQUILINO_INEXISTENTE)$/;
   var MENSAJE_SIN_RESPUESTA = 'No se pudo confirmar la activación: el servicio no respondió o se cortó la conexión. No se borró nada de este equipo; vuelve a intentarlo con el mismo código y la misma contraseña. Si te dice que la comunidad ya tiene cuenta, usa «Entrar con mi clave».';
-  /* el código ya se gastó tras una respuesta perdida: la activación anterior pudo guardarse, así que la bóveda se conserva */
-  var MENSAJE_PUDO_GUARDARSE = 'El RUT o el código no coinciden, o ya se usó. La activación anterior pudo guardarse antes de que se cortara la conexión: no se borró nada de este equipo. Si la comunidad ya quedó activada, entra con tu clave.';
-  var LEAD_CUENTA_EXISTENTE = 'Esta comunidad ya tiene cuenta. Entra con tu clave para traer sus datos a este equipo, o usa un código de reinicio si olvidaste la clave.';
-  var LEAD_PUDO_GUARDARSE = 'La activación anterior pudo guardarse. Entra con tu clave para comprobarlo, o usa un código de reinicio si olvidaste la clave.';
-  /* aviso de un rechazo que borró la bóveda: lo muestra la pantalla nueva que dibuja el borrado */
-  var avisoAlta = null;
+  var MENSAJE_PUDO_GUARDARSE = 'El correo o el código no coinciden, o el código venció. La activación anterior pudo guardarse antes de que se cortara la conexión: no se borró nada de este equipo. Entra con tu clave para comprobarlo.';
+  var LEAD_CUENTA_EXISTENTE = 'Esta comunidad ya tiene cuenta. Entra con tu correo y clave para traer sus datos a este equipo.';
+  function activationMessage(e) {
+    if (e && e.pudoGuardarse) return MENSAJE_PUDO_GUARDARSE;
+    if (e && e.code === 'CODIGO_INVALIDO') return 'El correo o el código no coinciden, o el código venció. Revisa los datos o pide un código nuevo.';
+    if (e && e.code === 'CUENTA_EXISTENTE') return LEAD_CUENTA_EXISTENTE;
+    if (e && (e.code === 'DATOS_LOCALES' || e.code === 'YA_EXISTE')) return 'Este equipo ya tiene datos guardados. Conserva su respaldo e inicia sesión, o activa desde otro navegador sin datos.';
+    if (e && e.code === 'BLOQUEADO') return 'Demasiados intentos. Espera un rato.';
+    return e && e.code ? 'No se pudo crear la cuenta. Vuelve a intentarlo.' : MENSAJE_SIN_RESPUESTA;
+  }
+  function emailField() {
+    var field = textField('Correo registrado', { id: 'auth-email' });
+    field.input.type = 'email'; field.input.setAttribute('type', 'email');
+    field.input.setAttribute('autocapitalize', 'off');
+    return field;
+  }
+  function normalizedEmail(input) { return input.value.trim().toLowerCase().replace(/\s+/g, ''); }
+  function validEmail(value) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value); }
 
-  /* ---------- crear cuenta (o proteger los datos que ya había) ---------- */
-  function createScreen(legacy, onDone, conReinicio) {
-    var tenant = !legacy && A.inquilino && A.inquilino();
-    /* código de reinicio: la comunidad ya tiene cuenta; es el mismo formulario de activar, sin comprobar antes que la cuenta no exista */
-    var reinicio = !!(conReinicio && tenant);
-    var title = h('span', null, reinicio ? 'Activa con tu código de reinicio' : legacy ? 'Protege los datos de tu comunidad' : 'Crea la cuenta de tu comunidad');
-    var lead = h('span', null, reinicio ? 'Escribe el RUT, el código de reinicio que te entregó el Organismo y tu contraseña nueva. La contraseña nueva reemplaza a la anterior de la comunidad.' : legacy ? 'Tus datos de antes se van a guardar cifrados con una contraseña. Elige una que puedas recordar; sin ella nadie podrá abrirlos, ni siquiera nosotros.' : 'La contraseña protege lo que guardas en este equipo: gastos, fotos y documentos. Nadie más puede abrirlo sin ella.');
-    var name = textField('Nombre de la comunidad', { hint: 'Este es el «usuario» con el que entras.', value: (legacy && legacy.community && legacy.community.name) || '' });
-    /* sitio de una comunidad (subdominio): el nombre viene del servicio y se activa con el RUT y el código del Organismo */
-    var rutField = tenant ? textField('RUT de la comunidad', { hint: 'El RUT de la comunidad, como figura en el acuerdo con CORFO.' }) : null;
-    var codeField = tenant ? textField('Código de activación', { hint: reinicio ? 'El código de reinicio que entregó el Organismo.' : 'Te lo entrega el Organismo Colaborador. Sirve una sola vez y vence a los 30 días.' }) : null;
-    if (tenant) {
-      name.input.readOnly = true; name.input.value = 'Cargando…';
-      A.infoInquilino().then(function (r) { if (r && r.ok) name.input.value = r.nombre; else showErr(err, 'Esta dirección no corresponde a una comunidad del servicio.'); }, function () { name.input.value = ''; showErr(err, 'No se pudo comprobar la comunidad. Revisa la conexión.'); });
+  /* ---------- activar por correo (o proteger los datos antiguos) ---------- */
+  function createScreen(legacy, onDone) {
+    var name = legacy ? textField('Nombre de la comunidad', { value: (legacy.community && legacy.community.name) || '' }) : emailField();
+    var code = legacy ? null : textField('Código de primer ingreso', { autocomplete: 'one-time-code', hint: 'Te lo entrega el Organismo Colaborador. Sirve una sola vez y vence a los 30 días.' });
+    var p1 = passField('Nueva clave', { autocomplete: 'new-password', describedby: legacy ? 'create-password-requirements' : null, hint: legacy ? C.passwordChecks('', '').map(function (check) { return check.label; }).join('. ') + '.' : 'Mínimo 8 caracteres, una mayúscula (A-Z, Á, É, Í, Ó, Ú, Ñ) y un número (0-9).' });
+    var p2 = passField('Confirmar clave', { autocomplete: 'new-password', required: false, describedby: 'create-password-match' });
+    var match = passwordConfirmation(p1.input, p2, 'create-password-match');
+    var legacyHints = legacy ? passwordChecklist(p1.input, name.input, 'create-password-requirements') : null;
+    var err = errBox(), pendiente = null, sinRespuesta = false, enviando = false, accountExists = false, pendingEmail = '';
+    var title = h('span', null, legacy ? 'Protege los datos de tu comunidad' : 'Activar tu comunidad');
+    var lead = h('span', null, legacy ? 'Protege los datos de este equipo con una contraseña.' : 'Escribe el correo registrado, el Código de primer ingreso y elige tu clave definitiva.');
+    function irAEntrarConClave() {
+      if (enviando) return;
+      A.lock('manual').then(function () { A.goto('device'); }, function () { showErr(err, 'No se pudieron guardar los cambios de este equipo. Vuelve a intentarlo.'); });
     }
-    var reqId = 'create-password-requirements';
-    var p1 = passField('Contraseña', { autocomplete: 'new-password', describedby: reqId, hint: 'Al menos 10 caracteres. Una frase de tres o cuatro palabras funciona bien.' });
-    var p2 = passField('Repite la contraseña', { autocomplete: 'new-password', required: false, describedby: 'create-password-match' });
-    var matchHint = passwordConfirmation(p1.input, p2, 'create-password-match');
-    var err = errBox(), hints = passwordChecklist(p1.input, name.input, reqId), accountExists = false;
-    /* alta sin respuesta del servicio: la bóveda ya está en este equipo y el reintento no crea otra. sinRespuesta: pudo llegar al servicio */
-    var pendiente = null, sinRespuesta = false, enviando = false;
-    /* activa la cuenta en el servicio. Solo un rechazo definitivo borra la bóveda de este equipo; sin respuesta se conserva para reintentar */
-    function activar(r) {
-      return A.serverActivate(rutField.input.value.trim(), codeField.input.value.trim(), { reinicio: reinicio }).then(function () { pendiente = null; sinRespuesta = false; return r; }, function (e) {
-        var codigo = e && e.code;
-        /* puede ser la cuenta que este equipo ya envió: no se borra y se pasa a «Entrar con mi clave» */
-        if (codigo === 'CUENTA_EXISTENTE' && sinRespuesta) throw e;
-        /* el código ya se gastó y el envío anterior no tuvo respuesta: la activación anterior pudo guardarse, así que no se borra nada */
-        if (codigo === 'CODIGO_INVALIDO' && sinRespuesta) throw Object.assign(new Error(MENSAJE_PUDO_GUARDARSE), { code: codigo, pudoGuardarse: true });
-        if (RECHAZO_ALTA.test(codigo || '') || codigo === 'CUENTA_EXISTENTE') {
-          pendiente = null; sinRespuesta = false; avisoAlta = e;
-          return RF.auth.wipeDevice().then(function () { throw e; }, function () { throw e; });
-        }
-        /* respuesta del servicio que no crea la cuenta, o error local: no se borra nada */
-        if (codigo) throw e;
-        /* sin código no llegó la respuesta (TIMEOUT, red): la cuenta puede haberse guardado */
-        sinRespuesta = true;
-        throw new Error(MENSAJE_SIN_RESPUESTA);
-      });
-    }
-    /* la comunidad ya tiene cuenta (o una activación anterior pudo guardarse): se retira el alta y se ofrece entrar con la clave o usar un código de reinicio */
-    function mostrarCuentaExistente(texto) {
+    function mostrarCuentaExistente() {
       accountExists = true; p1.input.value = p2.input.value = '';
-      title.textContent = 'Inicia sesión con tu comunidad';
-      lead.textContent = texto;
+      title.textContent = 'Inicia sesión con tu comunidad'; lead.textContent = LEAD_CUENTA_EXISTENTE;
       U.clear(form); form.appendChild(err);
       form.appendChild(h('button', { type: 'button', class: 'btn primary big', onclick: irAEntrarConClave }, 'Entrar con mi clave'));
-      form.appendChild(h('button', { type: 'button', class: 'btn big', onclick: irAReinicio }, 'Tengo un código de reinicio'));
     }
-    /* si quedó abierta por un alta sin respuesta, la bóveda se cierra antes de la entrada: la app no debe mostrarse con ella */
-    function irAEntrarConClave() {
-      A.lock('manual').then(function () { A.goto('device'); }, function () { showErr(err, 'No se pudieron guardar los cambios de este equipo. Vuelve a intentarlo en un momento.'); });
-    }
-    /* «Tengo un código de reinicio»: el formulario de activación con la contraseña nueva. Solo se quita la bóveda que creó este mismo alta (está vacía: aún no tiene datos de la comunidad). Cualquier otra cuenta guardada en el equipo no se borra */
-    function irAReinicio() {
-      if (!V.meta()) return A.goto('reinicio');
-      if (!pendiente) return showErr(err, 'Este equipo ya tiene la cuenta de la comunidad guardada. El código de reinicio no borra datos de este equipo: usa otro equipo sin cuenta, o pide ayuda al Organismo Colaborador.');
-      view = 'reinicio'; arg = null; avisoAlta = null;
-      var volver = function () { RF.app.render(); };
-      RF.auth.wipeDevice().then(volver, volver);
+    function activar(r) {
+      return A.serverActivateCorreo(pendingEmail, code.input.value.trim()).then(function () { pendiente = null; sinRespuesta = false; return r; }, function (e) {
+        var codigo = e && e.code;
+        if (codigo === 'CUENTA_EXISTENTE' && sinRespuesta) throw e;
+        if (codigo === 'CODIGO_INVALIDO' && sinRespuesta) throw Object.assign(new Error(MENSAJE_PUDO_GUARDARSE), { code: codigo, pudoGuardarse: true });
+        if (RECHAZO_ALTA.test(codigo || '') || codigo === 'CUENTA_EXISTENTE') {
+          pendiente = null; sinRespuesta = false;
+          return A.wipeDevice().then(function () { throw e; }, function () { throw e; });
+        }
+        if (!codigo) sinRespuesta = true;
+        throw e;
+      });
     }
     var form = h('form', { class: 'auth-form', novalidate: true, onsubmit: function (ev) {
       ev.preventDefault(); showErr(err, '');
-      if (accountExists) return showErr(err, 'Esta comunidad ya tiene cuenta. Inicia sesión con tu clave.');
-      var nm = name.input.value.trim();
-      if (nm.length < 3) return showErr(err, 'Escribe el nombre de la comunidad.');
-      var pr = C.passwordProblems(p1.input.value, nm); if (pr.length) return showErr(err, pr[0]);
-      if (!matchHint.validate()) return;
-      if (tenant && !rutField.input.value.trim()) return showErr(err, 'Escribe el RUT de la comunidad.');
-      if (tenant && !codeField.input.value.trim()) return showErr(err, 'Escribe el código de activación.');
-      /* con varias comunidades, la cuenta se activa en el servicio con el RUT y el código. Sin respuesta, la bóveda se conserva y el reintento usa esa misma alta */
-      if (tenant && pendiente && p1.input.value !== V.password()) return showErr(err, 'Escribe la misma contraseña que usaste al principio: esta cuenta se activa con ella.');
       if (enviando) return;
+      if (accountExists) return showErr(err, LEAD_CUENTA_EXISTENTE);
+      var user = legacy ? name.input.value.trim() : normalizedEmail(name.input);
+      if (legacy ? user.length < 3 : !validEmail(user)) return showErr(err, legacy ? 'Escribe el nombre de la comunidad.' : 'Escribe un correo válido.');
+      var problem = legacy ? C.passwordProblems(p1.input.value, user)[0] : A.activationPasswordProblem(p1.input.value);
+      if (problem) return showErr(err, problem);
+      if (!match.validate()) return;
+      if (!legacy && !code.input.value.trim()) return showErr(err, 'Escribe el Código de primer ingreso.');
+      if (pendiente && (p1.input.value !== V.password() || user !== pendingEmail)) return showErr(err, 'Escribe la misma contraseña y el mismo correo que usaste al principio para completar esta activación.');
       enviando = true;
-      var todo;
-      if (!tenant) todo = A.createAccount(nm, p1.input.value);
-      else if (pendiente) todo = activar(pendiente);
-      else todo = A.createAccount(nm, p1.input.value, reinicio ? { reinicio: true } : undefined).then(function (r) { pendiente = r; return activar(r); });
-      work(todo, tenant ? 'Activando tu cuenta…' : 'Comprobando la cuenta…').then(function (r) { enviando = false; if (r && r.legacyPendiente) UI.toast('No se pudo quitar una copia antigua sin cifrar de este navegador. Avisa a quien te apoya.', 'bad'); onDone(r); }).catch(function (e) {
-        enviando = false;
-        if (e.code === 'CUENTA_EXISTENTE') mostrarCuentaExistente(LEAD_CUENTA_EXISTENTE);
-        else if (e.pudoGuardarse) mostrarCuentaExistente(LEAD_PUDO_GUARDARSE);
-        showErr(err, e.message, e);
+      var todo = legacy ? A.createAccount(user, p1.input.value) : pendiente ? activar(pendiente) : A.createAccount(user, p1.input.value, { activacionCorreo: true }).then(function (r) {
+        pendiente = r; pendingEmail = user; return activar(r);
       });
-    } }, name.node, tenant ? rutField.node : null, tenant ? codeField.node : null, p1.node, hints.node, p2.node, err, h('button', { type: 'submit', class: 'btn primary big' }, tenant ? (reinicio ? 'Activar con el código de reinicio' : 'Activar mi cuenta') : (legacy ? 'Proteger mis datos' : 'Crear cuenta')));
-    /* si la activación fue rechazada, el aviso se muestra aquí: el borrado de este equipo redibuja la pantalla y el formulario anterior ya no se ve */
-    if (avisoAlta) { var previo = avisoAlta; avisoAlta = null; showErr(err, previo.message, previo); if (previo.code === 'CUENTA_EXISTENTE') mostrarCuentaExistente(LEAD_CUENTA_EXISTENTE); }
-    return shell(title, lead,
-      [form, reinicio ? h('p', { class: 'hint' }, 'Con un código de reinicio no se comprueba antes si la comunidad tiene cuenta.') : h('p', { class: 'hint' }, 'Antes de crear, comprobamos si tu comunidad ya tiene cuenta. Hace falta conexión y un servicio aprobado.'),
-        reinicio ? null : legacy ? h('p', { class: 'hint' }, 'Si tu comunidad ya tiene cuenta en el servicio, no crees otra: elige «Iniciar sesión» y usa esa cuenta.') : h('p', { class: 'hint' }, 'Si tu comunidad ya tiene cuenta, inicia sesión con su usuario y clave para traer sus datos a este equipo.'),
-        h('button', { type: 'button', class: 'linklike', onclick: function () { A.goto('device'); } }, 'Iniciar sesión (ya tengo la cuenta de mi comunidad)')]);
+      /* Ni la barra de progreso ni los avisos reflejan mensajes remotos o errores de transporte con datos ingresados. */
+      todo = todo.catch(function (e) { throw Object.assign(new Error(legacy ? 'No se pudieron proteger los datos de este equipo.' : activationMessage(e)), { code: e && e.code, pudoGuardarse: e && e.pudoGuardarse }); });
+      work(todo, legacy ? 'Protegiendo los datos…' : 'Activando tu comunidad…').then(function (r) {
+        enviando = false; name.input.value = ''; if (code) code.input.value = ''; p1.input.value = p2.input.value = '';
+        onDone(r);
+      }).catch(function (e) {
+        enviando = false;
+        if (e.code === 'CUENTA_EXISTENTE' || e.pudoGuardarse) mostrarCuentaExistente();
+        showErr(err, e.message);
+      });
+    } }, name.node, code ? code.node : null, p1.node, legacyHints ? legacyHints.node : null, p2.node, err, h('button', { type: 'submit', class: 'btn primary big' }, legacy ? 'Proteger mis datos' : 'Activar mi comunidad'));
+    return shell(title, lead, [form, h('button', { type: 'button', class: 'linklike', onclick: irAEntrarConClave }, 'Iniciar sesión')]);
+  }
+
+  /* ---------- lista pública y entrada por correo ---------- */
+  function communityListScreen() {
+    var list = h('div', { 'aria-live': 'polite' }), err = errBox();
+    function load() {
+      U.clear(list); showErr(err, ''); list.appendChild(h('p', null, 'Cargando comunidades…'));
+      Promise.resolve().then(function () { return A.comunidadesPublicas(); }).then(function (r) {
+        if (!r || r.ok !== true || !Array.isArray(r.comunidades)) throw new Error('SERVICIO');
+        U.clear(list);
+        if (!r.comunidades.length) list.appendChild(h('p', null, 'No hay comunidades disponibles por ahora.'));
+        r.comunidades.forEach(function (c) {
+          if (!c || typeof c.id !== 'string' || typeof c.nombre !== 'string') return;
+          list.appendChild(h('button', { type: 'button', class: 'btn big', onclick: function () {
+            if (RF.organismo && RF.organismo.urlComunidad) root.location.assign(RF.organismo.urlComunidad(c.id));
+            else A.goto('login', { id: c.id, nombre: c.nombre });
+          } }, c.nombre));
+        });
+      }).catch(function () {
+        U.clear(list); showErr(err, 'No se pudo cargar la lista de comunidades. Revisa la conexión y vuelve a intentarlo.');
+        list.appendChild(h('button', { type: 'button', class: 'btn', onclick: load }, 'Reintentar'));
+      });
+    }
+    load();
+    var google = h('button', { type: 'button', class: 'btn organismo-entrada', onclick: function () {
+      if (google.disabled) return;
+      showErr(err, '');
+      if (!RF.googleOrganismo || !RF.organismo || !RF.organismo.entrarConGoogle) return showErr(err, 'El ingreso con Google todavía no está configurado.');
+      google.disabled = true;
+      RF.organismo.entrarConGoogle(approvedList()[0]).then(function () { RF.app.render(); }).catch(function (e) { showErr(err, e.message); })
+        .finally(function () { google.disabled = false; });
+    } }, 'Entrar como Organismo Colaborador');
+    var screen = shell('Elige tu comunidad', 'Selecciona el nombre de tu comunidad para ingresar.', [list, err, google,
+      !approvedList().length ? h('p', { class: 'hint' }, 'Esta versión no tiene un servicio aprobado. Pide configurar el servicio de tu comunidad.') : null,
+      h('button', { type: 'button', class: 'linklike', onclick: function () { A.goto('activar'); } }, 'Tengo un código de primer ingreso')]);
+    screen.className += ' organismo-acceso';
+    return screen;
+  }
+  function communityLoginScreen(community) {
+    var email = emailField(), pw = passField('Clave'), err = errBox(), sending = false;
+    var google = h('button', { type: 'button', class: 'btn big', onclick: function () {
+      if (sending) return;
+      if (!RF.googleComunidad) return showErr(err, 'El ingreso con Google está pendiente de configuración. Puedes entrar con tu clave.');
+      sending = true; google.disabled = true; showErr(err, '');
+      RF.googleComunidad.enter(community.id).then(function () { view = null; arg = null; RF.app.render(); }).catch(function () {
+        showErr(err, RF.googleComunidad.configured() ? 'No se pudo ingresar con Google. Revisa la cuenta elegida, los permisos y la conexión.' : 'El ingreso con Google está pendiente de configuración. Puedes entrar con tu clave.');
+      }).finally(function () { sending = false; google.disabled = false; });
+    } }, 'Entrar con Google');
+    var form = h('form', { class: 'auth-form', novalidate: true, onsubmit: function (ev) {
+      ev.preventDefault(); showErr(err, '');
+      if (sending) return;
+      var user = normalizedEmail(email.input);
+      if (!validEmail(user)) return showErr(err, 'Escribe un correo válido.');
+      if (!pw.input.value) return showErr(err, 'Escribe tu clave.');
+      if (!approvedList().length) return showErr(err, 'Esta versión no tiene un servicio aprobado. Pide configurar el servicio de tu comunidad.');
+      sending = true;
+      work(A.connectDevice(approvedList()[0], user, pw.input.value, community.id).catch(function () {
+        throw new Error('No se pudo ingresar. Revisa el correo, la clave y la conexión, o espera si agotaste los intentos.');
+      }), 'Ingresando…').then(function (r) {
+        sending = false; email.input.value = pw.input.value = ''; view = null; arg = null;
+        if (RF.googleComunidad) RF.googleComunidad.offerSetup();
+        if (r && r.copiaLocal) UI.toast('Los datos anteriores de este equipo se reemplazaron por los de la cuenta del servicio.', 'ok');
+        if (r && r.fotosPendientes) UI.toast('No se pudieron quitar las fotos anteriores de este equipo.', 'bad');
+        if (r && r.legacyPendiente) UI.toast('No se pudo quitar una copia antigua sin cifrar de este navegador.', 'bad');
+      }).catch(function (e) { sending = false; showErr(err, e.message); pw.input.value = ''; });
+    } }, email.node, pw.node, err, h('button', { type: 'submit', class: 'btn primary big' }, 'Ingresar'));
+    return shell(community.nombre, 'Ingresa con tu correo registrado y tu clave.', [
+      V.meta() || (V.legacyState && V.legacyState()) ? h('p', { class: 'hint' }, 'Al traer la cuenta del servicio se reemplazarán los datos de este equipo y sus fotos locales. Respalda antes los cambios que no guardaste en el servicio.') : null,
+      form, google, h('p', { class: 'hint' }, 'Con Google autorizas crear la carpeta «Rinde Fácil» en tu Drive y compartirla con edición con el Organismo. Usa la cuenta registrada de tu comunidad. Los cambios se guardan en el servicio; mantén esta pestaña abierta hasta confirmar el guardado.'),
+      h('button', { type: 'button', class: 'linklike', onclick: function () { A.goto('recover', { id: community.id }); } }, 'Olvidé mi contraseña'),
+      h('button', { type: 'button', class: 'linklike', onclick: function () {
+        if (RF.organismo && RF.organismo.inquilinoDeHost() && !/(^|\.)localhost$/.test(root.location.hostname || '')) root.location.assign('/');
+        else A.goto('device');
+      } }, 'Elegir otra comunidad'),
+      h('button', { type: 'button', class: 'linklike', onclick: function () { A.goto('activar'); } }, 'Tengo un código de primer ingreso')]);
   }
 
   /* ---------- entrar ---------- */
@@ -217,45 +273,68 @@
       ev.preventDefault(); showErr(err, '');
       if (sinServicio) return showErr(err, 'Esta versión no tiene un servicio aprobado para traer la cuenta desde otro equipo. Pide configurar el servicio de tu comunidad y vuelve a entrar.');
       var job = device ? A.connectDevice(approvedList()[0], name.input.value, pw.input.value) : A.unlock(name.input.value, pw.input.value);
-      work(job, device ? 'Conectando…' : 'Abriendo…').then(function (r) { if (r && r.copiaLocal) UI.toast('Los datos anteriores de este equipo se reemplazaron por los de la cuenta del servicio.', 'ok'); if (r && r.fotosPendientes) UI.toast('No se pudieron quitar las fotos anteriores de este equipo. No se pueden abrir con la cuenta nueva.', 'bad'); if (r && r.legacyPendiente) UI.toast('No se pudo quitar una copia antigua sin cifrar de este navegador. Avisa a quien te apoya.', 'bad'); }).catch(function (e) { showErr(err, device && RF.cloud && RF.cloud.humanError ? RF.cloud.humanError(e) : e.message, e); pw.input.value = ''; pw.input.focus(); });
+      work(job, device ? 'Conectando…' : 'Abriendo…').then(function (r) { if (r && r.fotosPendientes) UI.toast('No se pudieron quitar las fotos anteriores de este equipo. No se pueden abrir con la cuenta nueva.', 'bad'); if (r && r.legacyPendiente) UI.toast('No se pudo quitar una copia antigua sin cifrar de este navegador. Avisa a quien te apoya.', 'bad'); }).catch(function (e) { showErr(err, device && RF.cloud && RF.cloud.humanError ? RF.cloud.humanError(e) : e.message, e); pw.input.value = ''; pw.input.focus(); });
     } }, name.node, pw.node, err, h('button', { type: 'submit', class: 'btn primary big' }, 'Entrar'));
     setTimeout(function () { (name.input.value ? pw.input : name.input).focus(); }, 30);
     if (!device) return shell('Entra a Rinde Fácil', reason === 'inactividad' ? 'La sesión se cerró porque estuvo un rato sin usarse. Tus datos siguen guardados.' : 'Escribe el nombre de tu comunidad y tu contraseña.',
       [form, h('button', { type: 'button', class: 'linklike', onclick: function () { A.goto('recover'); } }, 'Olvidé mi contraseña'),
         h('button', { type: 'button', class: 'linklike', onclick: function () { A.goto('device'); } }, 'Traer la cuenta del servicio a este equipo'),
-        h('p', { class: 'hint' }, 'Si tu comunidad ya tiene cuenta en el servicio, usa «Traer la cuenta del servicio» con el mismo usuario y clave. Los datos de este equipo se reemplazarán por los de esa cuenta.')]);
+        h('p', { class: 'hint' }, 'Si tu comunidad ya tiene cuenta en el servicio, usa «Traer la cuenta del servicio» con el mismo usuario y clave. Los cambios de este equipo se conservan cifrados hasta sincronizarlos.')]);
     return shell('Inicia sesión', 'Usa el nombre de tu comunidad y la contraseña que tenías en el otro equipo.',
       [sinServicio ? h('p', { class: 'hint' }, 'Esta versión no tiene un servicio aprobado para traer tu cuenta. Pide configurar el servicio de tu comunidad; no crees otra cuenta.') : null,
-        device && (V.meta() || (V.legacyState && V.legacyState())) ? h('p', { class: 'hint' }, 'Este equipo ya tiene datos. Al traer la cuenta del servicio, los datos de este equipo y sus fotos locales se reemplazan por los de esa cuenta. Los cambios que no se guardaron en el servicio se pierden.') : null,
+        device && (V.meta() || (V.legacyState && V.legacyState())) ? h('p', { class: 'hint' }, 'Este equipo ya tiene datos. Si están vinculados, se conservan al ingresar. Si están sin vincular, la entrada queda bloqueada sin borrar nada.') : null,
         form,
         !V.meta() ? h('button', { type: 'button', class: 'linklike', onclick: function () { A.goto(''); } }, 'Crear la cuenta de tu comunidad en este equipo') : null]);
   }
 
   /* ---------- recuperar ---------- */
   function recoverScreen() {
-    var code = textField('Código de recuperación', { autocomplete: 'off', hint: 'Los 26 caracteres que guardaste al crear la cuenta.' });
+    var route = RF.organismo && RF.organismo.inquilinoDeHost ? RF.organismo.inquilinoDeHost() : '';
+    var tenant = textField('Identificador de la comunidad', { id: 'recover-tenant', value: (arg && arg.id) || route || '', hint: 'El mismo identificador que usas para ingresar al servicio.' });
+    tenant.input.required = false;
+    var code = textField('Código de recuperación local', { id: 'recover-local-code', autocomplete: 'off', hint: 'Los 26 caracteres que guardaste al crear la cuenta. Usa el navegador que conserva tu almacén cifrado.' });
+    var emailCode = textField('Código recibido por correo', { autocomplete: 'one-time-code' });
+    emailCode.input.setAttribute('inputmode', 'numeric'); emailCode.input.setAttribute('maxlength', '6'); emailCode.input.required = false;
     var meta = V.meta() || {}, reqId = 'recover-password-requirements';
     var communityName = meta.display || meta.user || '';
     var p1 = passField('Contraseña nueva', { autocomplete: 'new-password', describedby: reqId });
     var p2 = passField('Repite la contraseña nueva', { autocomplete: 'new-password', required: false, describedby: 'recover-password-match' });
     var matchHint = passwordConfirmation(p1.input, p2, 'recover-password-match');
     var hints = passwordChecklist(p1.input, communityName, reqId);
-    var err = errBox();
+    var err = errBox(), notice = h('p', { role: 'status', 'aria-live': 'polite' }), sending = false;
+    var send = h('button', { type: 'button', class: 'btn', onclick: function () {
+      if (sending) return;
+      var id = tenant.input.value.trim().toLowerCase();
+      if (!id) return showErr(err, 'Indica el identificador de tu comunidad.');
+      sending = true; send.disabled = true; showErr(err, '');
+      A.requestRecovery(id).then(function () { notice.textContent = 'Código enviado al correo registrado. Vence en 15 minutos; tienes cinco intentos. Puedes pedir hasta tres códigos por hora.'; }, function (e) { showErr(err, e.message); }).finally(function () { sending = false; send.disabled = false; });
+    } }, 'Enviar código por correo');
     var form = h('form', { class: 'auth-form', onsubmit: function (ev) {
       ev.preventDefault(); showErr(err, '');
+      if (sending) return;
       var problems = C.passwordProblems(p1.input.value, communityName); if (problems.length) return showErr(err, problems[0]);
       if (!matchHint.validate()) return;
-      work(A.recover(code.input.value, p1.input.value), 'Recuperando…').then(function (r) {
+      var id = tenant.input.value.trim().toLowerCase();
+      if (id && !/^\d{6}$/.test(emailCode.input.value.trim())) return showErr(err, 'Escribe el código de seis dígitos recibido por correo.');
+      sending = true;
+      work(A.recover(code.input.value, p1.input.value, id ? { inquilino: id, codigo: emailCode.input.value.trim() } : undefined), 'Recuperando…').then(function (r) {
         var warning = r.serviceTrustBlocked ? 'La bóveda de este equipo se recuperó, pero la dirección guardada del servicio no está aprobada en esta versión. No se envió el código ni se modificó el acceso remoto. Pide verificar y aprobar la dirección antes de conectar.'
           : r.serverReset === false ? 'La bóveda de este equipo ya cambió y se generó el código nuevo que aparece abajo, pero el servicio remoto no confirmó el restablecimiento. El Drive todavía puede exigir la contraseña anterior. No borres esta sesión ni pierdas el código; vuelve a intentar cuando el servicio esté disponible.'
           : r.serverAccountMissing ? 'La recuperación cambió la bóveda de este equipo, pero el servicio conectado todavía no tiene una cuenta creada. El código de abajo sirve para este equipo; no se modificó ningún acceso remoto.' : '';
         A.goto('recovery', { code: r.recoveryCode, warning: warning });
       }).catch(function (e) {
-        if (e && e.code === 'LOCAL_RECOVERY_COMMIT_FAILED_AFTER_REMOTE' && e.recoveryCode) A.goto('recovery', { code: e.recoveryCode, warning: e.message });
-        else showErr(err, e.message, e);
-      });
-    } }, code.node, p1.node, hints.node, p2.node, err, h('button', { type: 'submit', class: 'btn primary big' }, 'Cambiar contraseña'));
-    return shell('Recuperar el acceso', 'Con el código de recuperación puedes elegir una contraseña nueva sin perder tus datos.', [form, h('button', { type: 'button', class: 'linklike', onclick: function () { A.goto('lock'); } }, 'Volver')]);
+        showErr(err, e.message, e);
+        if (e && e.code === 'LOCAL_RECOVERY_COMMIT_FAILED_AFTER_REMOTE') {
+          var retry = h('button', { type: 'button', class: 'btn', onclick: function () {
+            if (sending) return;
+            sending = true;
+            work(A.retryRecoveryCommit(), 'Guardando recuperación…').then(function (r) { A.goto('recovery', { code: r.recoveryCode }); }, function (error) { showErr(err, error.message); err.appendChild(retry); }).finally(function () { sending = false; });
+          } }, 'Reintentar guardado local');
+          err.appendChild(retry);
+        }
+      }).finally(function () { sending = false; });
+    } }, tenant.node, send, notice, emailCode.node, code.node, p1.node, hints.node, p2.node, err, h('button', { type: 'submit', class: 'btn primary big' }, 'Cambiar contraseña'));
+    return shell('Recuperar el acceso', 'Pide el código por correo y usa tu código de recuperación local para conservar tus datos al cambiar la clave.', [!V.meta() ? h('p', { class: 'hint' }, 'Este navegador no tiene un almacén local. Para recuperar sus datos, usa el equipo que lo conserva. El Organismo puede ayudarte a reiniciar la cuenta.') : null, form, h('button', { type: 'button', class: 'linklike', onclick: function () { A.goto('lock'); } }, 'Volver')]);
   }
 
   function insecureScreen() {
@@ -263,26 +342,38 @@
   }
 
   /* ---------- qué pantalla toca ---------- */
-  var view = null, arg = null;
+  var view = null, arg = null, activationNode = null;
   function screen(phase) {
     if (phase === 'insecure') return insecureScreen();
+    if (phase === 'legacy') return shell('Datos sin vincular', 'Este equipo tiene datos sin vincular. La entrada está bloqueada hasta definir cómo incorporarlos al servicio. No se borró nada.', []);
+    if (phase === 'locked' && V.meta() && !['device', 'recover', 'activar', 'reinicio', 'login'].includes(view)) return lockScreen(A.reason());
     if (view === 'recovery') {
       var recovery = arg && typeof arg === 'object' ? arg : { code: arg, warning: '' };
-      return recoveryScreen(recovery.code, function () { view = null; arg = null; A.touch(); RF.app.render(); }, recovery.warning);
+      return recoveryScreen(recovery.code, function () { view = null; arg = null; A.touch(); RF.app.render(); if (RF.googleComunidad) RF.googleComunidad.offerSetup(); }, recovery.warning);
     }
-    if (view === 'recover' && phase === 'locked') return recoverScreen();
+    if (view === 'recover') return recoverScreen();
+    if (view === 'login' && arg) return communityLoginScreen(arg);
+    if (view === 'activar' || view === 'reinicio') {
+      if (!activationNode) activationNode = createScreen(null, activationDone);
+      return activationNode;
+    }
+    if (view === 'device') return communityListScreen();
     if (view === 'lock' && phase === 'locked') return lockScreen(A.reason());
-    if (phase === 'locked' && view !== 'device') return lockScreen(A.reason());
-    if ((phase === 'none' || phase === 'legacy' || phase === 'locked') && view === 'device') return lockScreen('', true); /* equipo nuevo o con copia local: traer la cuenta que ya existe en el servicio */
-    return createScreen(phase === 'legacy' ? V.legacyState() : null, function (r) { view = 'recovery'; arg = r.recoveryCode; RF.app.render(); }, view === 'reinicio' && phase === 'none');
+    var community = RF.organismo && RF.organismo.inquilinoDeHost ? RF.organismo.inquilinoDeHost() : null;
+    if (community) return communityLoginScreen({ id: community, nombre: community });
+    return communityListScreen();
   }
-  A.goto = function (v, a) { view = v; arg = a || null; RF.app.render(); };
-  RF.authui = { showErr: showErr, screen: screen, pending: function () { return view === 'recovery'; } };
+  function activationDone(r) { view = 'recovery'; arg = r.recoveryCode; RF.app.render(); }
+  A.goto = function (v, a) { view = v; arg = a || null; activationNode = null; RF.app.render(); };
+  RF.authui = { showErr: showErr, screen: screen, pending: function () { return view === 'recovery' || view === 'activar' || view === 'reinicio'; } };
 
   /* ================= herramienta «Seguridad» ================= */
   TOOLS.seguridad = { title: 'Seguridad', icon: 'shield', desc: 'Cambia la contraseña, cierra sesiones, mira quién entró y revisa que todo esté protegido.', render: function () {
     /* en la entrada asistida del Organismo no se cierra la sesión de la comunidad ni se cambia su clave: el servicio lo rechaza */
     var asistida = !!(RF.auth && RF.auth.esAsistida && RF.auth.esAsistida());
+    if (A.esGoogle && A.esGoogle()) return h('div', { class: 'tool-page' }, h('h1', {}, 'Seguridad'),
+      h('p', {}, 'Entraste con Google. Los datos y adjuntos de esta sesión viven en memoria y se guardan en el servicio. Mantén la conexión y espera a que se confirme el guardado antes de cerrar la pestaña. Para cambiar la clave, ingresa con ella.'),
+      UI.btn('Bloquear ahora', { onclick: function () { A.lock('manual').catch(function () { UI.toast('Quedan cambios sin guardar. Revisa la conexión y vuelve a intentarlo.', 'bad'); }); } }));
     var s = RF.store.get(), root = h('div', { class: 'tool-page' }, h('h1', { class: 'tool-title' }, 'Seguridad'), h('p', { class: 'lead' }, 'Todo lo que guardas en este equipo está cifrado con la contraseña de tu comunidad.'));
     var status = h('div'), log = h('div'), out = h('div');
     function msg(kind, t) { U.clear(out); out.appendChild(UI.callout(kind, '', t)); }
@@ -299,6 +390,13 @@
     }
     paintStatus();
     root.appendChild(UI.section('Estado', [status]));
+    if (!asistida && RF.googleComunidad) root.appendChild(UI.section('Carpeta de la comunidad', [
+      h('p', {}, 'Autoriza con la cuenta Google registrada crear «Rinde Fácil» en tu Drive y compartirla con edición con el Organismo.'),
+      UI.btn('Preparar mi carpeta', { onclick: function () {
+        RF.googleComunidad.connectDrive().then(function () { msg('ok', 'La carpeta está preparada.'); }).catch(function () {
+          msg('bad', RF.googleComunidad.configured() ? 'No se pudo preparar la carpeta. Revisa la cuenta elegida y los permisos.' : 'Google está pendiente de configuración.');
+        });
+      } })]));
 
     var idle = UI.field('Cerrar la sesión si no la usas por', s.ui, 'idleMinutes', { type: 'select', noEmpty: true, options: [{ id: 5, name: '5 minutos' }, { id: 15, name: '15 minutos' }, { id: 30, name: '30 minutos' }, { id: 60, name: '1 hora' }], onChange: function (v) { s.ui.idleMinutes = Number(v); RF.store.update(function () { }, { silent: true }); paintStatus(); } });
     root.appendChild(UI.section('Esta sesión', [idle, h('div', { class: 'row-actions' },
@@ -311,7 +409,7 @@
     /* cambiar contraseña */
     var accountMeta = V.meta() || {}, reqId = 'change-password-requirements';
     var o = passField('Contraseña actual');
-    var n1 = passField('Contraseña nueva', { autocomplete: 'new-password', describedby: reqId, hint: 'Al menos 10 caracteres.' });
+    var n1 = passField('Contraseña nueva', { autocomplete: 'new-password', describedby: reqId, hint: C.passwordChecks('', '').map(function (check) { return check.label; }).join('. ') + '.' });
     var n2 = passField('Repite la contraseña nueva', { autocomplete: 'new-password', required: false, describedby: 'change-password-match' });
     var matchHint = passwordConfirmation(n1.input, n2, 'change-password-match');
     var newPasswordHints = passwordChecklist(n1.input, accountMeta.display || accountMeta.user || '', reqId);

@@ -49,15 +49,15 @@
   function excelSerial(iso) { var d = U.isoToDate(iso); if (!d) return null; return Math.round(d.getTime() / 86400000) + 25569; }
 
   /* estilos (índices en cellXfs) */
-  var STYLE = { normal: 0, bold: 1, header: 2, money: 3, date: 4, wrap: 5, moneyBold: 6, title: 7, pct: 8, note: 9, mark: 10 };
+  var STYLE = { normal: 0, bold: 1, header: 2, money: 3, date: 4, wrap: 5, moneyBold: 6, title: 7, pct: 8, note: 9, mark: 10, integer: 11, sgpDate: 12, percent: 13 };
   var STYLES_XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-    '<numFmts count="1"><numFmt numFmtId="165" formatCode="0&quot;%&quot;"/></numFmts>' +
+    '<numFmts count="3"><numFmt numFmtId="165" formatCode="0&quot;%&quot;"/><numFmt numFmtId="166" formatCode="dd-mm-yyyy"/><numFmt numFmtId="167" formatCode="0.##%"/></numFmts>' +
     '<fonts count="4"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font><font><i/><sz val="10"/><color rgb="FF555555"/><name val="Calibri"/></font></fonts>' +
     '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9E7E5"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFD84D"/><bgColor indexed="64"/></patternFill></fill></fills>' +
     '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FF999999"/></left><right style="thin"><color rgb="FF999999"/></right><top style="thin"><color rgb="FF999999"/></top><bottom style="thin"><color rgb="FF999999"/></bottom><diagonal/></border></borders>' +
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-    '<cellXfs count="11">' +
+    '<cellXfs count="14">' +
     '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
     '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
     '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment wrapText="1" vertical="center"/></xf>' +
@@ -69,6 +69,9 @@
     '<xf numFmtId="165" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
     '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
     '<xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1"/>' +
+    '<xf numFmtId="1" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
+    '<xf numFmtId="166" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
+    '<xf numFmtId="167" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
     '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
 
   function cellXml(cell, r, c) {
@@ -132,6 +135,7 @@
 
   /* ======================= Documento -> hojas / texto / HTML ======================= */
   function fmtCell(v, type) {
+    if (v && typeof v === 'object' && v.text !== undefined) return v.text;
     if (v === null || v === undefined || v === '') return '';
     if (type === 'money') return U.fmtCLP(v);
     if (type === 'pct') return U.fmtNum(v) + ' %';
@@ -139,7 +143,23 @@
     return String(v);
   }
   function X(doc, fmt) { return RF.exp && RF.exp.expand ? RF.exp.expand(doc, fmt) : doc; }
-  function docToSheets(doc) { return doc.sheetsBy && RF.exp && RF.exp.sheetsPro ? RF.exp.sheetsPro(doc, docToSheetsBase) : docToSheetsBase(doc); }
+  function docToSheets(doc) {
+    if (RF.anexoModelos && RF.anexoModelos.isModel(doc)) doc = RF.anexoModelos.asDocument(doc);
+    if (doc.sgp) {
+      var table = doc.blocks[0];
+      var data = [table.head.map(function (v) { return { v: v, s: 'header' }; })].concat(table.rows.map(function (row) {
+        return row.map(function (v, i) {
+          if ([3, 13, 16, 17].indexOf(i) >= 0 && v) {
+            var parts = String(v).split('-'); return { v: excelSerial(parts[2] + '-' + parts[1] + '-' + parts[0]), s: 'sgpDate' };
+          }
+          return { v: v, s: table.types[i] === 'integer' ? 'integer' : 'wrap' };
+        });
+      }));
+      var notes = Object.assign({}, doc, { sgp: false, sheet: 'Revisión y respaldos', blocks: doc.blocks.slice(1) });
+      return [{ name: 'Rendición SGP', rows: data, cols: table.head.map(function (_, i) { return i === 18 ? 55 : 24; }), merges: [] }].concat(docToSheetsBase(notes));
+    }
+    return doc.sheetsBy && RF.exp && RF.exp.sheetsPro ? RF.exp.sheetsPro(doc, docToSheetsBase) : docToSheetsBase(doc);
+  }
   function docToSheetsBase(doc) {
     doc = X(doc, 'xlsx');
     var rows = [], merges = [], widths = [34, 22, 22, 22, 22, 22, 22, 22];
@@ -160,6 +180,7 @@
         var first = rows.length + 1; /* 1-based, primera fila de datos */
         (b.rows || []).forEach(function (r) {
           push(r.map(function (v, i) {
+            if (v && typeof v === 'object' && typeof v.v === 'number') return { v: v.v, s: v.s };
             var ty = (b.types && b.types[i]) || 'text';
             if (v === '■') return { v: '', s: 'mark' }; /* mes cubierto en la Carta Gantt: la celda completa va en amarillo, sin símbolo */
             if (v === null || v === undefined || v === '') return { v: '', s: ty === 'money' ? 'money' : 'wrap' };
@@ -189,6 +210,7 @@
   function sumCol(rows, i) { var t = 0; rows.forEach(function (r) { t += Number(r[i]) || 0; }); return t; }
 
   function docToText(doc) {
+    if (RF.anexoModelos && RF.anexoModelos.isModel(doc)) doc = RF.anexoModelos.asDocument(doc);
     doc = X(doc, 'text');
     var out = [doc.title.toUpperCase()];
     if (doc.subtitle) out.push(doc.subtitle);
@@ -211,6 +233,7 @@
   }
 
   function docToHtmlBody(doc) {
+    if (RF.anexoModelos && RF.anexoModelos.isModel(doc)) return RF.anexoModelos.html(doc, true);
     doc = X(doc, 'html');
     var e = U.esc, h = doc.report ? '' : '<h1>' + e(doc.title) + '</h1>';
     if (doc.subtitle && !doc.report) h += '<p class="sub">' + e(doc.subtitle) + '</p>';
@@ -242,14 +265,17 @@
     '.grid th,.grid td{border:1px solid #444;padding:3pt 5pt;font-size:10.5pt;vertical-align:top}.grid thead th{background:#e3ecea;text-align:left}.grid tfoot th{background:#f2f2f2;text-align:left}.r{text-align:right!important;white-space:nowrap}' +
     '.empty{height:22pt}.sign{display:flex;gap:28pt;margin-top:46pt}.sign>div{flex:1;text-align:center;font-size:10.5pt}.sign span{display:block;border-top:1px solid #000;margin-bottom:3pt}';
   function docToHtml(doc, opts) {
-    var css = DOC_CSS + (doc.pro && RF.exp && RF.exp.PRO_CSS ? RF.exp.PRO_CSS : '') + (doc.report && doc.footTitle ? '@page{@bottom-left{content:"' + String(doc.footTitle).replace(/[\\"\n]/g, ' ') + '";font:8pt Segoe UI,Calibri,Arial,sans-serif;color:#6b6478}@bottom-right{content:"Página " counter(page);font:8pt Segoe UI,Calibri,Arial,sans-serif;color:#6b6478}}' : '') + (opts && opts.look && RF.exp && RF.exp.LOOK_CSS ? RF.exp.LOOK_CSS[opts.look] || '' : '');
+    if (RF.anexoModelos && RF.anexoModelos.isModel(doc)) return RF.anexoModelos.html(doc, false);
+    var css = DOC_CSS + (doc.pro && RF.exp && RF.exp.PRO_CSS ? RF.exp.PRO_CSS : '') + (doc.report && doc.footTitle ? '@page{@bottom-left{content:"' + String(doc.footTitle).replace(/[\\"\n]/g, ' ').replace(/</g, '\\3c ').replace(/>/g, '\\3e ') + '";font:8pt Segoe UI,Calibri,Arial,sans-serif;color:#6b6478}@bottom-right{content:"Página " counter(page);font:8pt Segoe UI,Calibri,Arial,sans-serif;color:#6b6478}}' : '') + (opts && opts.look && RF.exp && RF.exp.LOOK_CSS ? RF.exp.LOOK_CSS[opts.look] || '' : '') + (doc.sgp ? '@page{size:A3 landscape;margin:10mm}.wide{page:auto}.grid th,.grid td{font:7pt/1.35 Arial,sans-serif;overflow-wrap:anywhere;white-space:normal}.grid{table-layout:fixed;font-variant-numeric:tabular-nums}.grid th:nth-child(19),.grid td:nth-child(19){width:12%}' : '');
     return '<!doctype html><html lang="es"><head><meta charset="utf-8"><title>' + U.esc(doc.title) + '</title><style>' + css + '</style></head><body>' + docToHtmlBody(doc) + '</body></html>';
   }
   function docToWord(doc) { /* Word abre HTML con extensión .doc */
+    if (RF.anexoModelos && RF.anexoModelos.isModel(doc)) return RF.anexoModelos.html(doc, false);
     return '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>' + U.esc(doc.title) + '</title><style>' + DOC_CSS + '</style></head><body>' + docToHtmlBody(doc) + '</body></html>';
   }
   /* .docx de verdad: párrafos, títulos y tablas con los mismos datos que el resto de las salidas */
   function docToDocx(doc) {
+    if (RF.anexoModelos && RF.anexoModelos.isModel(doc)) return zipStore(RF.anexoModelos.packageFiles(doc));
     doc = X(doc, 'docx');
     var W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
     var media = [];
@@ -377,7 +403,11 @@
     document.body.appendChild(host);
     frame.contentDocument.open(); frame.contentDocument.write(docToHtml(doc)); frame.contentDocument.close();
     btnPrint.onclick = function () { frame.contentWindow.focus(); frame.contentWindow.print(); };
-    btnClose.onclick = function () { document.body.removeChild(host); };
+    /* con «atrás» o un enlace la vista previa también se cierra: si quedara encima, la pantalla de abajo parecería no cambiar */
+    var win = typeof window !== 'undefined' ? window : null;
+    function cerrar() { if (win && win.removeEventListener) win.removeEventListener('hashchange', cerrar); if (host.parentNode) host.parentNode.removeChild(host); }
+    btnClose.onclick = cerrar;
+    if (win && win.addEventListener) win.addEventListener('hashchange', cerrar);
     btnClose.focus();
     return host;
   }

@@ -12,6 +12,7 @@
 
   function activo(href) {
     var actual = location.hash || '#/';
+    if (href === '#/h/gastos' && /[?&]nuevo=1(?:&|$)/.test(actual)) return false;
     if (href === '#/') return actual === '#/' || actual === '';
     return actual.indexOf(href) === 0;
   }
@@ -58,6 +59,8 @@
   function colocar(paginas, indice, dx, animado) {
     var ancho = paginas[0].parentNode.getBoundingClientRect().width || 360;
     paginas.forEach(function (p, i) {
+      p.inert = i !== indice;
+      p.setAttribute('aria-hidden', i === indice ? 'false' : 'true');
       p.style.transition = animado ? 'transform .25s ease' : 'none';
       p.style.transform = 'translateX(' + ((i - indice) * ancho + dx) + 'px)';
       p.style.visibility = (i === indice || dx || animado) ? 'visible' : 'hidden';
@@ -76,31 +79,67 @@
       colocar(paginas, pagina, 0, true);
       setTimeout(function () { colocar(paginas, pagina, 0, false); }, 260);
     }
-    barra.addEventListener('touchstart', function (ev) {
-      x0 = ev.touches[0].clientX; y0 = ev.touches[0].clientY; horizontal = null;
+    function iniciar(x, y) {
+      x0 = x; y0 = y; horizontal = null;
       colocar(paginas, pagina, 0, false);
-    }, { passive: true });
-    barra.addEventListener('touchmove', function (ev) {
+    }
+    function mover(x, y) {
       if (x0 === null) return;
-      var dx = ev.touches[0].clientX - x0, dy = ev.touches[0].clientY - y0;
+      var dx = x - x0, dy = y - y0;
       if (horizontal === null) {
         if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
         horizontal = Math.abs(dx) > Math.abs(dy);
       }
       if (!horizontal) return;
-      /* en los extremos el dedo se siente con resistencia */
       if ((dx < 0 && pagina >= paginas.length - 1) || (dx > 0 && pagina <= 0)) dx = dx / 3;
       colocar(paginas, pagina, dx, false);
-    }, { passive: true });
-    barra.addEventListener('touchend', function (ev) { terminar(ev.changedTouches[0].clientX); });
-    /* si el sistema cancela el gesto (una llamada, otra app), vuelve la página que estaba visible */
-    barra.addEventListener('touchcancel', function () { terminar(null); });
+    }
+    if (root.PointerEvent) {
+      var pointerId = null, arrastrado = false;
+      barra.addEventListener('pointerdown', function (ev) {
+        if (ev.isPrimary === false || ev.button !== 0) return;
+        pointerId = ev.pointerId; arrastrado = false; iniciar(ev.clientX, ev.clientY);
+      });
+      barra.addEventListener('pointermove', function (ev) {
+        if (ev.pointerId !== pointerId || x0 === null) return;
+        mover(ev.clientX, ev.clientY);
+        if (horizontal) {
+          arrastrado = true;
+          if (barra.setPointerCapture) barra.setPointerCapture(pointerId);
+        }
+      });
+      function soltar(ev, cancelado) {
+        if (ev.pointerId !== pointerId) return;
+        terminar(cancelado ? null : ev.clientX);
+        if (cancelado) arrastrado = false;
+        if (barra.hasPointerCapture && barra.hasPointerCapture(pointerId)) barra.releasePointerCapture(pointerId);
+        pointerId = null;
+      }
+      barra.addEventListener('pointerup', function (ev) { soltar(ev, false); });
+      barra.addEventListener('pointercancel', function (ev) { soltar(ev, true); });
+      barra.addEventListener('lostpointercapture', function (ev) { soltar(ev, true); });
+      barra.addEventListener('click', function (ev) {
+        if (arrastrado) { ev.preventDefault(); ev.stopPropagation(); arrastrado = false; }
+      }, true);
+    } else {
+      barra.addEventListener('touchstart', function (ev) { iniciar(ev.touches[0].clientX, ev.touches[0].clientY); }, { passive: true });
+      barra.addEventListener('touchmove', function (ev) { mover(ev.touches[0].clientX, ev.touches[0].clientY); }, { passive: true });
+      barra.addEventListener('touchend', function (ev) { terminar(ev.changedTouches[0].clientX); });
+      barra.addEventListener('touchcancel', function () { terminar(null); });
+    }
+    barra.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+      ev.preventDefault();
+      pagina = Math.max(0, Math.min(paginas.length - 1, pagina + (ev.key === 'ArrowRight' ? 1 : -1)));
+      colocar(paginas, pagina, 0, false);
+      barra.focus();
+    });
   }
 
   /* barra de dos páginas (solo Organismo, dentro de una comunidad). Al abrir la comunidad, se desliza desde el panel */
   function barraDoble(entrando) {
     var paginas = [paginaPanel(), paginaComunidad()];
-    var barra = h('nav', { class: 'tabbar tb-pager', 'aria-label': 'Accesos rápidos' }, paginas);
+    var barra = h('nav', { class: 'tabbar tb-pager', tabindex: '0', 'aria-label': 'Accesos rápidos' }, paginas);
     /* la barra aún no está en la pantalla: se coloca al siguiente cuadro, con su ancho real. Al entrar, se desliza desde el panel */
     colocar(paginas, entrando ? 0 : pagina, 0, false);
     requestAnimationFrame(function () {
@@ -128,7 +167,7 @@
       der = [{ href: '#/o/registro', icon: 'calendar', label: 'Registro' }];
     } else {
       izq = [{ href: '#/', icon: 'home', label: 'Hoy' }, { href: '#/h/gastos', icon: 'money', label: 'Gastos' }];
-      centro = { href: '#/h/gastos', icon: 'plus', label: '+ Gasto', centro: true };
+      centro = { href: '#/h/gastos?nuevo=1', icon: 'plus', label: '+ Gasto', centro: true };
       der = [{ href: '#/h/revision', icon: 'check', label: 'Rendición' }];
     }
     var lista = izq.map(enlace).concat([enlace(centro)], der.map(enlace), [menu()]);

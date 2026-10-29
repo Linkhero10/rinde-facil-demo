@@ -59,20 +59,61 @@
   }
 
   /* ---------- rendición en formato SGP ---------- */
+  /* Contrato de columnas; no contiene filas de la plantilla ni datos reales. */
+  var SGP_HEAD = ['Cuenta', 'Item', 'Fuente Financiamiento', 'Periodo', 'Etapa', 'Tipo documento', 'N° Documento', 'RUT Proveedor', 'Nombre proveedor o razón social', 'Monto Neto', 'Monto IVA', 'Monto Total', 'Monto Rendir', 'Fecha de Recepción', 'Monto Cancelado', 'Forma de Pago', 'Fecha de Pago', 'Fecha del documento', 'Glosa / Justificación', 'Receptor Rut', 'Nombre Receptor', 'Liq. De Sueldo'];
+  var SGP_CUENTA = { rrhh: 'RECURSOS HUMANOS', operacion: 'GASTOS DE OPERACIÓN', inversion: 'GASTOS DE INVERSIÓN', administracion: 'GASTOS DE ADMINISTRACIÓN' };
+  var SGP_DOC = { factura: 'FACTURA', factura_terceros: 'FACTURA', boleta: 'BOLETA', voucher: 'BOLETA', honorarios: 'BOLETA HONORARIOS', liquidacion: 'LIQ. SUELDO', invoice: 'INVOICE' };
+  var SGP_PAGO = { transferencia: 'Transferencia electrónica', cheque: 'Cheque cobrado (cartola bancaria)', efectivo: 'Efectivo', tarjeta: 'Tarjeta de crédito (cartola de cobro)', deposito: 'Depósito Bancario' };
+  function sgpDate(value) {
+    if (!value) return '';
+    var s = String(value), m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    var date = m && U.isoToDate(s);
+    if (!date || date.toISOString().slice(0, 10) !== s) throw new Error('Fecha SGP inválida: usa año-mes-día en el formulario.');
+    return m[3] + '-' + m[2] + '-' + m[1];
+  }
+  function sgpAmount(value) {
+    if (value == null || String(value).trim() === '') return '';
+    var raw = String(value).trim();
+    if (typeof value !== 'number' && !/^(?:\d+|\d{1,3}(?:\.\d{3})+)(?:,0+)?$/.test(raw)) throw new Error('Los montos SGP deben ser pesos enteros, positivos o cero.');
+    var n = typeof value === 'number' ? value : num(value);
+    if (!Number.isSafeInteger(n) || n < 0) throw new Error('Los montos SGP deben ser pesos enteros, positivos o cero.');
+    return n;
+  }
+  function sgpRut(value) { return String(value || '').replace(/[.\s-]/g, '').toUpperCase(); }
+  function sgpRow(e) {
+    var period = e.periodoSGP || (e.fecha ? e.fecha.slice(0, 7) + '-01' : '');
+    if (e.etapaSGP && !/^\d+$/.test(String(e.etapaSGP))) throw new Error('La etapa SGP debe ser el número registrado en SGP.');
+    return [SGP_CUENTA[e.cuenta] || '', e.item || '', e.fuenteFinanciamiento || 'CORFO', sgpDate(period), e.etapaSGP == null ? '' : String(e.etapaSGP), SGP_DOC[e.docType] || '', e.folio || '', sgpRut(e.rutProveedor), e.proveedor || '', sgpAmount(e.neto), sgpAmount(e.iva), sgpAmount(e.total), sgpAmount(e.montoRendir), sgpDate(e.fechaRecepcion), sgpAmount(e.montoCancelado), SGP_PAGO[e.formaPago] || '', sgpDate(e.fechaPago), sgpDate(e.fecha), e.glosa || '', sgpRut(e.receptorRut), e.receptorNombre || '', e.liquidacionSueldo || ''];
+  }
+  /* El archivo de Drive refleja TODO el proyecto, sin el filtro de rendición. */
+  function gastosDoc(project) {
+    return { sgp: true, title: 'Gastos - ' + (project.name || 'Proyecto sin nombre'), sheet: 'Gastos', blocks: [
+      { t: 'table', wide: true, head: SGP_HEAD.slice(), types: SGP_HEAD.map(function (_, i) { return [9, 10, 11, 12, 14].indexOf(i) >= 0 ? 'integer' : 'text'; }), rows: (project.expenses || []).map(sgpRow) }
+    ] };
+  }
+  function sgpDelimited(doc, separator) {
+    var table = doc.blocks[0], sep = separator || ';';
+    return [table.head].concat(table.rows).map(function (r) { return r.map(function (v) {
+      var s = String(v == null ? '' : v);
+      /* Neutraliza fórmulas de hoja de cálculo en texto sin alterar montos. */
+      if (/^[=+@-]/.test(s) && typeof v !== 'number') s = "'" + s;
+      return s.indexOf(sep) >= 0 || /["\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }).join(sep); }).join('\r\n');
+  }
   function rendicionDoc(project, community) {
     var hasPeriod = project.periodoInicio || project.periodoFin;
     if (hasPeriod && (!project.periodoInicio || !project.periodoFin || project.periodoInicio > project.periodoFin)) throw new Error('Completa un período de rendición válido antes de exportar.');
     var selected = (project.expenses || []).filter(function (e) { return !hasPeriod || (e.fecha && e.fecha >= project.periodoInicio && e.fecha <= project.periodoFin); });
     var excluded = (project.expenses || []).length - selected.length;
     var res = L.reconcile(project, community, U.todayISO(), RF.holidays.all());
-    var ev = {}; res.evals.forEach(function (x) { ev[x.e.id] = x.r; });
     var bad = res.evals.filter(function (x) { return selected.indexOf(x.e) >= 0 && x.r.status === 'error'; }).length;
-    var rows = selected.slice().sort(function (a, b) { return String(a.fecha).localeCompare(String(b.fecha)); }).map(function (e) {
-      var per = e.fecha ? e.fecha.slice(0, 7) + '-01' : '';
-      return [project.code || project.name, (D.CUENTA_BY_ID[e.cuenta] || {}).sgp || '', 'CORFO', e.item || '', per, num(e.montoRendir), (D.FORMAS_PAGO.filter(function (f) { return f.id === e.formaPago; })[0] || {}).name || '', (D.DOC_BY_ID[e.docType] || {}).name || '', e.folio, e.rutProveedor ? U.rutFormat(e.rutProveedor) : '', e.proveedor, e.glosa, STATUS_LABEL[(ev[e.id] || {}).status] || ''];
-    });
-    return { title: (bad ? 'BORRADOR · ' : '') + 'Rendición de gastos', subtitle: (project.name || '') + (project.code ? ' · ' + project.code : '') + (project.periodoInicio ? ' · período ' + U.fmtDateShort(project.periodoInicio) + ' al ' + U.fmtDateShort(project.periodoFin) : ''), sheet: 'Rendición', footer: 'Generado con Rinde Fácil. Sirve para ingresar cada gasto en SGP, uno a uno, con los datos exactos del documento.' + (bad ? ' ATENCIÓN: hay ' + bad + ' gasto(s) con errores; corrígelos antes de enviar.' : '') + ' ' + excluded + ' gasto(s) fuera del período o sin fecha excluidos; siguen guardados en el proyecto.', blocks: [
-      { t: 'table', head: ['Proyecto', 'Cuenta', 'Fuente', 'Ítem', 'Período', 'Monto rendido ($)', 'Forma de pago', 'Tipo de documento', 'N° documento', 'RUT proveedor', 'Proveedor', 'Glosa', 'Estado'], types: ['text', 'text', 'text', 'text', 'date', 'money', 'text', 'text', 'text', 'text', 'text', 'text', 'text'], rows: rows, foot: ['Total', '', '', '', '', 'SUM', '', '', '', '', '', '', ''] },
+    var rows = selected.slice().sort(function (a, b) { return String(a.fecha).localeCompare(String(b.fecha)); }).map(sgpRow);
+    var missing = {};
+    rows.forEach(function (row) { [0, 1, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].forEach(function (i) { if (row[i] === '') missing[SGP_HEAD[i]] = true; }); });
+    var warning = Object.keys(missing).length ? ' Datos sin registrar (celdas vacías, no inferidos): ' + Object.keys(missing).join(', ') + '. Completa los campos SGP del gasto antes de usar la rendición.' : '';
+    var draft = bad || Object.keys(missing).length;
+    return { sgp: true, title: (draft ? 'BORRADOR · ' : '') + 'Rendición de gastos', subtitle: (project.name || '') + (project.code ? ' · ' + project.code : '') + (project.periodoInicio ? ' · período ' + U.fmtDateShort(project.periodoInicio) + ' al ' + U.fmtDateShort(project.periodoFin) : ''), sheet: 'Rendición', footer: 'Generado con Rinde Fácil. Sirve para ingresar cada gasto en SGP, uno a uno, con los datos exactos del documento.' + (bad ? ' ATENCIÓN: hay ' + bad + ' gasto(s) con errores; corrígelos antes de enviar.' : '') + ' ' + excluded + ' gasto(s) fuera del período o sin fecha excluidos; siguen guardados en el proyecto.' + warning, blocks: [
+      { t: 'table', wide: true, head: SGP_HEAD.slice(), types: SGP_HEAD.map(function (_, i) { return [9, 10, 11, 12, 14].indexOf(i) >= 0 ? 'integer' : 'text'; }), rows: rows },
       { t: 'p', text: excluded + ' gasto(s) fuera del período o sin fecha se excluyeron; siguen guardados en el proyecto.' }
     ].concat(comparacionesGastos(selected, project, !hasPeriod)) };
   }
@@ -87,19 +128,27 @@
   /* ================= Gastos ================= */
   TOOLS.gastos = { title: 'Gastos y rendición', icon: 'money', desc: 'Anota cada gasto a mano o con foto del comprobante. Te avisa qué falta.', render: function () {
     var c = ctx(), p = c.project; if (!p) return page('Gastos y rendición', '', needProject());
-    var st = { editing: (RF.app && RF.app.pendingEdit) || null, filter: (RF.app && RF.app.pendingFilter) || 'all' }; if (RF.app) { RF.app.pendingFilter = null; RF.app.pendingEdit = null; }
+    var st = { editing: (RF.app && RF.app.pendingEdit) || null, filter: (RF.app && RF.app.pendingFilter) || 'all', adding: /[?&]nuevo=1(?:&|$)/.test(location.hash || '') }; if (RF.app) { RF.app.pendingFilter = null; RF.app.pendingEdit = null; }
     TOOLS.gastos.reset = function () { st.editing = null; }; /* lo usa el menú: tocar «Gastos» vuelve a la lista */
     var root = h('div');
     var fileInput = h('input', { type: 'file', accept: 'image/*,application/pdf', multiple: true, class: 'sr-only', 'aria-label': 'Elegir fotos o PDF de comprobantes' });
     var camInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'sr-only', 'aria-label': 'Sacar foto al comprobante' });
     var cuotaBox = h('div', { class: 'gastos-cuota' });
-    function paint() { U.clear(root); root.appendChild(fileInput); root.appendChild(camInput); root.appendChild(cuotaBox); if (st.editing) paintEditor(); else paintList(); }
+    var provider = 'cloud_vision';
+    var providerSelect = RF.ocr.selectorProveedor(function (value) { provider = value; });
+    var providerBox = h('label', { class: 'field' }, h('span', { class: 'lbl' }, 'Opción de lectura'), providerSelect);
+    function paint() { U.clear(root); root.appendChild(fileInput); root.appendChild(camInput); root.appendChild(providerBox); root.appendChild(cuotaBox); if (st.editing) paintEditor(); else paintList(); }
 
     function refreshIfList() { if (!st.editing && root.isConnected !== false && document.body.contains(root)) paint(); }
     /* ---- procesar fotos ---- */
+    function esPdf(file) { return file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')); }
+    function abrirManual(e) {
+      e._ocrNote = 'No se pudo leer la imagen. Escribe los datos a mano.';
+      e._reading = false; st.editing = e.id; silent(); paint();
+    }
     function handleFiles(files) {
       files = Array.prototype.slice.call(files || []); if (!files.length) return;
-      RF.ocr.tarjetaLimites(cuotaBox, {});
+      if (files.some(function (f) { return !esPdf(f); })) RF.ocr.tarjetaLimites(cuotaBox, {});
       var made = [], i = 0, movedCount = 0;
       function next() {
         if (i >= files.length) {
@@ -111,7 +160,7 @@
         var file = files[i++];
         return addExpenseWithReceipt(p, file).then(function (e) {
           made.push(e.id); e._reading = true;
-          if (!RF.cloud.configured()) { e._reading = false; e._ocrNote = 'Anota los datos mirando la foto. Para leerla automáticamente, conecta el servicio en la nube.'; return null; }
+          if (!esPdf(file) && !RF.cloud.configured()) { abrirManual(e); return null; }
           return ocrJob(file, e, files.length > 1 ? 'Leyendo el comprobante ' + i + ' de ' + files.length : 'Leyendo el comprobante').then(function (res) { if (e._doc) return autoFile(e).then(function (moved) { if (moved) movedCount++; }); });
         }).catch(function (err) {
           UI.toast('No se agregó este gasto porque no se pudo guardar su comprobante (' + (err.message || err) + ').', 'bad');
@@ -125,32 +174,38 @@
     /* forzar = «Leer de nuevo»: vuelve a leer aunque la foto ya se haya leído (y eso sí se cobra) */
     function ocrJob(file, e, title, forzar) {
       var b = UI.busy(title, STAGES);
-      return RF.ocr.recognizeCached(file, b.stage, forzar).then(function (res) {
+      return RF.ocr.recognizeCached(file, b.stage, forzar, provider).then(function (res) {
         b.stage('parse', 'Ordenando los datos…');
         applyOcr(e, res);
         if (res && res.ok) b.done(res.desdeCache ? 'Listo: esta foto ya se había leído; no se cobró.' : 'Listo. Compara los datos con la foto.'); else b.fail('Google no pudo leer esta foto (' + ((res && res.error) || 'error') + '). Anota los datos a mano.');
-        e._reading = false; refreshIfList();
-        RF.ocr.tarjetaLimites(cuotaBox, {});
+        e._reading = false;
+        if ((!res || !res.ok) && RF.ocr.requiereIngresoManual(file, { message: res && res.error })) abrirManual(e);
+        else refreshIfList();
+        if (!res || res.engine !== 'capa_texto') RF.ocr.tarjetaLimites(cuotaBox, {});
+        else U.clear(cuotaBox);
         return res;
       }).catch(function (err) {
         e._ocrNote = 'No se pudo leer la foto automáticamente: ' + RF.cloud.humanError(err) + ' Anota los datos mirando la foto, o usa «Leer de nuevo» cuando vuelva la conexión.';
         b.fail('No se pudo leer (' + (err.message || err) + '). Anota los datos mirando la foto.');
-        e._reading = false; refreshIfList();
+        e._reading = false;
+        if (RF.ocr.requiereIngresoManual(file, err)) abrirManual(e);
+        else refreshIfList();
       });
     }
     function applyOcr(e, res) {
       var limite = res && RF.ocr.mensajeLimite(res.error, res.limit);
       if (limite) { e._ocrNote = 'No se pudo leer la foto: ' + limite + '. Anota los datos mirando la foto y vuelve a leer otro día.'; return; }
       if (!res || !res.ok) { e._ocrNote = (/no devolvi[oó] texto|SIN_TEXTO/i.test(String((res && res.error) || '')) ? 'No se pudo leer texto en la foto. Prueba con otra más clara, de frente y con buena luz, o anota los datos mirando la foto.' : 'No se pudo leer la foto (' + String((res && res.error) || 'error desconocido').replace(/\.+$/, '') + '). Anota los datos mirando la foto.'); return; }
-      var out = RF.ocr.toExpenseFields(res.raw_text, 'cloud_vision', { communityRut: c.community && c.community.rut, communityName: c.community && c.community.name }), f = out.fields;
+      var engine = res.engine || provider;
+      var out = RF.ocr.toExpenseFields(res.raw_text, engine, { communityRut: c.community && c.community.rut, communityName: c.community && c.community.name }), f = out.fields;
       Object.keys(f).forEach(function (k) { e[k] = f[k]; });
       e._doc = out.document || null; /* cartola, cheque, F29…: no es un gasto */
       if (!f.docType && f.total != null) e.docType = e.docType || 'boleta';
-      e.ocr = { engine: res.engine || 'cloud_vision', at: new Date().toISOString(), raw: String(res.raw_text || '').slice(0, 6000), confidence: res.confidence == null ? null : res.confidence, ms: res.duration_ms || null, note: out.note, auto: JSON.parse(JSON.stringify(f)) };
+      e.ocr = { engine: engine, at: new Date().toISOString(), raw: String(res.raw_text || '').slice(0, 6000), confidence: res.confidence == null ? null : res.confidence, ms: res.duration_ms || null, note: out.note, auto: JSON.parse(JSON.stringify(f)) };
       if (!e.fechaPago && e.fecha && /^(debito|tarjeta|prepago)$/.test(e.formaPago || '')) e.fechaPago = e.fecha; /* pago con tarjeta: se paga al comprar */
       e.verified = false; e._manualRendir = false; syncRendir(e, c.community);
       var antes = res.desdeCache ? 'Esta foto ya se había leído' + (res.leidoEl ? ' el ' + fechaLarga(res.leidoEl) : '') + (res.nombreAntes ? ' (la primera vez se llamaba «' + res.nombreAntes + '»)' : '') + ': se usó esa lectura y no se cobró otra vez. ' : '';
-      e._ocrNote = antes + 'Leído con Google Cloud Vision. Compara cada dato con la foto antes de seguir.' + (out.note ? ' ' + out.note : '');
+      e._ocrNote = antes + (res.engine === 'capa_texto' ? 'Leído desde el texto del PDF, sin gastar lecturas. Compara cada dato con el documento antes de seguir.' : 'Leído con ' + (engine === 'cloud_vision' ? 'Cloud Vision' : 'Google Drive') + '. Compara cada dato con la foto antes de seguir.') + (out.note ? ' ' + out.note : '');
       silent();
     }
     camInput.addEventListener('change', function () { handleFiles(camInput.files); camInput.value = ''; });
@@ -251,14 +306,14 @@
         h('div', { class: 'stat ok' }, h('span', { class: 'stat-n' }, String(counts.ok)), h('span', null, 'listos')),
         h('div', { class: 'stat warn' }, h('span', { class: 'stat-n' }, String(counts.warn)), h('span', null, 'por revisar')),
         h('div', { class: 'stat bad' }, h('span', { class: 'stat-n' }, String(counts.error)), h('span', null, 'pendientes'))),
-        h('div', { class: 'row-actions' },
+        h('div', { class: 'row-actions', id: 'expense-add', tabindex: '-1' },
           UI.btn('Sacar foto al comprobante', { icon: 'camera', cls: 'primary', onclick: function () { camInput.click(); } }),
           UI.btn('Subir foto o PDF', { icon: 'file', onclick: function () { fileInput.click(); } }),
           UI.btn('Anotar a mano', { icon: 'edit', onclick: function () { var e = newExpense(); p.expenses.push(e); silent(); st.editing = e.id; paint(); } }),
           emptyExpenses().length ? UI.btn('Quitar gastos vacíos (' + emptyExpenses().length + ')', { icon: 'trash', cls: 'ghost', title: 'Gastos sin datos, por ejemplo fotos que no se pudieron leer', onclick: function () { UI.confirmBox('¿Quitar ' + emptyExpenses().length + ' gasto(s) sin datos? Las fotos asociadas también se quitan.', 'Quitar').then(function (yes) { if (!yes) return; var ids = emptyExpenses().map(function (x) { return x.id; }); p.expenses.filter(function (x) { return ids.indexOf(x.id) >= 0 && x.imgId; }).forEach(function (x) { RF.blobs.del(x.imgId); }); p.expenses = p.expenses.filter(function (x) { return ids.indexOf(x.id) < 0; }); silent(); paint(); }); } }) : null),
         h('div', { class: 'expense-drop-wrap' }, UI.fileDrop(fileInput, { kind: 'expense', multiple: true, label: 'Suelta aquí las fotos o PDF', hint: 'Sube boletas, facturas y también tus respaldos (cartola, cheque, Formulario 29…): la app los reconoce y adjunta cada respaldo al gasto que prueba, avisándote. La foto se guarda en este dispositivo y, si el OCR está conectado, se envía para leerla. No va al Drive hasta que revises y confirmes.', invalidText: 'Ese archivo no se puede usar como comprobante. Elige una foto compatible o un PDF.', onFiles: handleFiles })),
-        RF.cloud.configured() ? h('p', { class: 'hint' }, 'Las fotos se leen en la nube con Google Cloud Vision, en la cuenta de tu comunidad. Siempre tienes que revisar los datos.') : UI.callout('info', 'Lectura automática desactivada.', ' Puedes anotar los gastos a mano o conectar el servicio en la nube en «Nube y copias».')]));
-      var chips = h('div', { class: 'chips' }, [['all', 'Todos'], ['error', 'Pendientes'], ['warn', 'Por revisar'], ['ok', 'Listos']].map(function (f) { return h('button', { type: 'button', class: 'chip' + (st.filter === f[0] ? ' on' : ''), onclick: function () { st.filter = f[0]; paint(); } }, f[1]); }));
+        RF.cloud.configured() ? h('p', { class: 'hint' }, 'Las fotos se leen en la nube con Google Drive, en la cuenta de tu comunidad. Siempre tienes que revisar los datos.') : UI.callout('info', 'Lectura automática desactivada.', ' Puedes anotar los gastos a mano o conectar el servicio en la nube en «Nube y copias».')]));
+      var chips = h('div', { class: 'chips' }, [['all', 'Todos'], ['error', 'Pendientes'], ['warn', 'Por revisar'], ['ok', 'Listos']].map(function (f) { return h('button', { type: 'button', class: 'chip' + (st.filter === f[0] ? ' on' : ''), 'aria-pressed': String(st.filter === f[0]), onclick: function () { st.filter = f[0]; paint(); } }, f[1]); }));
       var rows = p.expenses.filter(function (e) { return st.filter === 'all' || evs[e.id].status === st.filter; }).slice().sort(function (a, b) { return String(b.fecha || 'z').localeCompare(String(a.fecha || 'z')); }).map(function (e) {
         var r = evs[e.id];
         return h('tr', { class: 'clickable', tabindex: 0, onclick: function () { st.editing = e.id; paint(); }, onkeydown: function (ev) { if (ev.key === 'Enter') { st.editing = e.id; paint(); } } },
@@ -467,6 +522,13 @@
         h('p', { class: 'hint' }, '¿No sabes en qué cuenta va? ', h('a', { href: '#/h/cuentas' }, 'Mira la ayuda para elegirla'), '.'),
         h('h3', { class: 'grp' }, '4. El pago'),
         h('div', { class: 'form-grid' }, fld('Forma de pago', 'formaPago', { type: 'select', options: D.FORMAS_PAGO, noEmpty: true }), fld('Fecha del pago', 'fechaPago', { type: 'date' })),
+        h('section', null, h('h3', { class: 'grp' }, 'Datos para SGP (22 columnas)'),
+          h('p', { class: 'hint' }, 'La fecha de recepción, el monto cancelado, la etapa y el receptor se anotan desde el respaldo. No se deducen del total. Si faltan, se exportan vacíos y la rendición queda como borrador. El período usa el primer día del mes del documento salvo que indique otro.'),
+          h('div', { class: 'form-grid' },
+            fld('Fecha de recepción', 'fechaRecepcion', { type: 'date' }), fld('Monto cancelado ($)', 'montoCancelado', { type: 'money' }),
+            fld('Número de etapa en SGP', 'etapaSGP', { type: 'text' }), fld('Fuente de financiamiento en SGP', 'fuenteFinanciamiento', { type: 'text', ph: 'CORFO' }),
+            fld('Período SGP (primer día del mes)', 'periodoSGP', { type: 'date' }), fld('RUT del receptor', 'receptorRut', { type: 'rut' }),
+            fld('Nombre del receptor', 'receptorNombre', { type: 'text' }), fld('Liq. de sueldo (si corresponde)', 'liquidacionSueldo', { type: 'text' }))),
         h('h3', { class: 'grp' }, '5. Marcas'),
         h('details', { class: 'nofin', open: Object.keys(e.noFin || {}).some(function (k) { return e.noFin[k]; }) }, h('summary', null, '¿Se puede pagar con el aporte?'), h('p', { class: 'hint' }, 'Marca solo si el gasto es de alguno de estos tipos (el Manual dice que no se financian):'), h('div', { class: 'checks' }, (e.noFin = e.noFin || {}, D.NO_FINANCIABLE.map(function (t, i) { return UI.field(t, e.noFin, 'k' + i, { type: 'check', onChange: refresh }); })))),
         h('div', { class: 'checks' }, fld('Es un viático o viaje', 'esViatico', { type: 'check' }), e.cuenta === 'inversion' ? fld('Es un inmueble o derechos de agua', 'esInmueble', { type: 'check' }) : null),
@@ -474,7 +536,7 @@
         h('h3', { class: 'grp' }, '6. Respaldos que hay que guardar'), reqBox,
         h('h3', { class: 'grp' }, '7. Revisión humana'),
         fld('Comparé cada dato con el documento original y está correcto', 'verified', { type: 'check', hint: e.ocr ? 'Obligatorio: los datos leídos por la nube pueden tener errores (por ejemplo, un dígito del RUT).' : '' }),
-        RF.cloud.configured() ? h('div', { class: 'row-actions' }, UI.btn(e.driveFichaAt ? 'Actualizar la ficha en el Drive' : 'Guardar la ficha en el Drive', { icon: 'cloud', cls: 'ghost', onclick: function () { RF.drive.saveFicha(e, p, c.community).then(function () { paint(); }).catch(function () { }); } }), h('span', { class: 'hint' }, 'La ficha es un texto con todos los datos de este gasto y lo que leyó la nube. Se guarda sola al marcar la revisión; usa este botón si cambias algo después.')) : null);
+        RF.cloud.configured() ? h('div', { class: 'row-actions' }, UI.btn(e.driveFichaAt ? 'Actualizar los gastos en Drive' : 'Guardar los gastos en Drive', { icon: 'cloud', cls: 'ghost', onclick: function () { RF.drive.saveFicha(e, p, c.community).then(function () { paint(); }).catch(function () { }); } }), h('span', { class: 'hint' }, 'Guarda todos los gastos del proyecto con el formato elegido en Nube y copias. El Excel consolidado se reemplaza en cada guardado.')) : null);
       var head = h('div', { class: 'row-actions between' }, UI.btn('← Volver a la lista', { cls: 'ghost', onclick: function () { st.editing = null; paint(); } }),
         h('div', { class: 'row-actions' }, UI.btn('Duplicar', { icon: 'copy', cls: 'ghost', onclick: function () { var d = U.deepClone(e); d.id = U.uid('g'); d.imgId = null; d.verified = false; d.folio = ''; p.expenses.push(d); silent(); st.editing = d.id; paint(); UI.toast('Gasto duplicado (sin foto ni número).', 'ok'); } }),
           UI.btn('Borrar gasto', { icon: 'trash', cls: 'ghost danger', onclick: function () { UI.confirmBox('¿Borrar este gasto? No se puede deshacer.', 'Borrar').then(function (ok) { if (!ok) return; if (e.imgId) RF.blobs.del(e.imgId); p.expenses.splice(p.expenses.indexOf(e), 1); silent(); st.editing = null; paint(); }); } })));
@@ -483,6 +545,7 @@
       paintPhoto(); refresh();
     }
     paint();
+    if (st.adding) requestAnimationFrame(function () { var addOptions = root.querySelector('[id="expense-add"]'); if (addOptions) addOptions.focus(); });
     RF.ocr.tarjetaLimites(cuotaBox, {});
     return page('Gastos y rendición', 'Anota cada gasto con los datos exactos del documento. La app revisa las reglas del Manual y te dice qué falta.', root);
   } };
@@ -507,7 +570,16 @@
       }));
       root.appendChild(UI.section(g.title, [list]));
     });
-    root.appendChild(UI.section('Antes de enviar', [h('div', { class: 'row-actions' }, UI.btn('Descargar la rendición', { icon: 'download', onclick: function () { location.hash = '#/h/gastos'; } }), UI.btn('Ver el resumen por cuentas', { icon: 'list', onclick: function () { location.hash = '#/h/resumen'; } }))]));
+    root.appendChild(UI.section('Descargar la rendición para SGP', [
+      h('p', { class: 'hint' }, 'Corrige los errores antes de enviar. La descarga conserva el período, las exclusiones y las advertencias; no envía datos a SGP.'),
+      UI.exportBar(function () { return rendicionDoc(p, c.community); }, 'rendicion-gastos'),
+      h('div', { class: 'row-actions' }, UI.btn('CSV SGP', { icon: 'excel', onclick: function () {
+        try { var d = rendicionDoc(p, c.community); U.download(new Blob(['\uFEFF' + sgpDelimited(d, ';')], { type: 'text/csv;charset=utf-8' }), 'rendicion-sgp.csv'); UI.toast(d.footer, 'info'); } catch (e) { UI.toast(e.message, 'bad'); }
+      } }), UI.btn('Copiar para SGP', { icon: 'copy', onclick: function () {
+        try { var d = rendicionDoc(p, c.community); U.copyText(sgpDelimited(d, '\t')).then(function (ok) { UI.toast(ok ? '22 columnas copiadas en orden SGP. Revise los datos antes de ingresarlos. ' + d.footer : 'No se pudo copiar.', ok ? 'info' : 'bad'); }); } catch (e) { UI.toast(e.message, 'bad'); }
+      } }), h('a', { class: 'btn ghost', href: '#/h/anexos' }, 'Anexos e informe técnico')),
+      h('div', { class: 'row-actions' }, UI.btn('Carpeta de respaldos por gasto', { icon: 'list', onclick: function () { RF.exp.printDoc(expedienteDoc(p, c.community)); } }),
+        h('a', { class: 'btn ghost', href: '#/h/resumen' }, 'Ver el resumen por cuentas'))]));
     return page('Revisión: ¿cuadra todo?', 'Cruza lo que anotaste en cada paso para encontrar diferencias antes de que las encuentre CORFO.', root);
   } };
 
@@ -648,6 +720,11 @@
       msg(res.ok ? 'ok' : 'info', res.text);
     }
     root.appendChild(UI.callout('info', 'Cómo funciona:', ' tus datos se guardan en este dispositivo. Si conectas el servicio de tu comunidad (un Apps Script en su propia cuenta de Google) y entras con la contraseña de tu comunidad, la app puede leer fotos con Google Cloud Vision y guardar una copia en el Drive de la comunidad. Nada se manda a la nube sin que tú lo pidas.'));
+    var formats = s.ui.driveFormats;
+    root.appendChild(UI.section('Formato al guardar en Drive', [h('div', { class: 'form-grid' },
+      UI.field('Anexos', formats, 'anexos', { type: 'select', noEmpty: true, options: [{ id: 'docx', name: 'Word (predeterminado)' }, { id: 'pdf', name: 'PDF' }] }),
+      UI.field('Boletas y gastos', formats, 'gastos', { type: 'select', noEmpty: true, options: [{ id: 'xlsx', name: 'Excel consolidado (predeterminado)' }, { id: 'pdf', name: 'PDF de resumen' }] }),
+      UI.field('Resúmenes', formats, 'resumenes', { type: 'select', noEmpty: true, options: [{ id: 'pdf', name: 'PDF (predeterminado)' }, { id: 'xlsx', name: 'Excel' }] }))]));
     var pendBox = h('div');
     function paintPend() {
       U.clear(pendBox);
@@ -693,7 +770,7 @@
         RF.cloud.configured() ? UI.btn('Guardar copia en la nube', { icon: 'cloud', onclick: function () { msg('info', 'Guardando…'); working('Guardando la copia en la nube', RF.drive.pushState()).then(function (r) { if (r.ok && r.remote) { dropConflictNotice(); msg('ok', 'Copia guardada en el Drive de la comunidad.'); } else if (r.queued) msg('warn', 'La copia quedó pendiente en este dispositivo; todavía no está en Drive.'); else if (r.conflict) RF.drive.resolveConflict().then(reportResolution); else msg('bad', 'No se pudo guardar: ' + (r.error || 'error')); }).catch(function (e) { msg('bad', 'No se pudo guardar: ' + RF.cloud.humanError(e)); }); } }) : null,
         RF.cloud.configured() ? UI.btn('Traer la copia de la nube', { icon: 'download', onclick: function () { msg('info', 'Trayendo…'); working('Trayendo la copia de la nube', RF.drive.resolveConflict({ pullOnly: true })).then(reportResolution).catch(function (e) { msg('bad', 'No se pudo traer: ' + RF.cloud.humanError(e)); }); } }) : null),
       s.cloud.conflict ? UI.callout('warn', 'Hay una copia más nueva en la nube.', ' Otro equipo guardó cambios. Pulsa «Guardar copia en la nube» para combinarlas sin perder nada.') : null,
-      s.cloud.lastSync ? h('p', { class: 'hint' }, 'Última copia en la nube: ' + new Date(s.cloud.lastSync).toLocaleString('es-CL')) : null, setupBox, pendBox, out]));
+      s.cloud.lastSync ? h('p', { class: 'hint' }, 'Última copia en la nube: ' + new Date(s.cloud.lastSync).toLocaleString('es-CL')) : h('p', { class: 'hint' }, 'Todavía no hay una copia guardada en la nube.'), setupBox, pendBox, out]));
     /* carpeta «Rinde fácil» en el Drive de la comunidad */
     var driveOut = h('div'), savesBox = h('div');
     function paintSaves() {
@@ -711,7 +788,7 @@
     }
     var pj = RF.store.project();
     root.appendChild(UI.section('Carpeta «Rinde fácil» en tu Drive', [
-      h('p', { class: 'hint' }, 'Lo que saques (Carta Gantt, anexos, rendición) y las fotos que revises quedan ordenados en una carpeta de tu Drive: Proyectos › nombre del proyecto › Planificación, Anexos, Rendición y Comprobantes por mes. Nunca se borra nada; si un documento cambia, se guarda otra versión.'),
+      h('p', { class: 'hint' }, 'Lo que saques (Carta Gantt, anexos, rendición) y las fotos que revises quedan ordenados en una carpeta de tu Drive: Proyectos › nombre del proyecto › Planificación, Anexos, Rendición y Comprobantes por mes. El Excel consolidado de gastos se reemplaza con todos los gastos del proyecto. Los demás documentos conservan sus versiones.'),
       UI.field('Guardar en el Drive todo lo que saque o suba', s.cloud, 'autoSave', { type: 'check', onChange: function () { silentSave(); } }),
       h('div', { class: 'row-actions' },
         UI.btn('Preparar mi carpeta' + (pj ? ' para «' + pj.name + '»' : ''), { icon: 'folder', cls: 'primary', onclick: function () { U.clear(driveOut); driveOut.appendChild(UI.callout('info', '', 'Preparando la carpeta…')); working('Preparando la carpeta en tu Drive', RF.drive.setup(pj && pj.name)).then(function (r) { U.clear(driveOut); driveOut.appendChild(UI.callout('ok', 'Lista.', ' La carpeta «Rinde fácil» está en tu Drive.')); if (r.rootUrl) driveOut.appendChild(h('p', null, h('a', { href: r.rootUrl, target: '_blank', rel: 'noopener' }, 'Abrir la carpeta en Drive'))); paintSaves(); }).catch(function (e) { U.clear(driveOut); RF.authui.showErr(driveOut, e.message === 'NO_CONFIGURADO' ? 'Primero conecta el servicio de tu comunidad.' : (e.retryAfter || e.seconds) ? e.message : 'No se pudo preparar la carpeta: ' + RF.cloud.humanError(e), e); }); } }),
@@ -725,9 +802,9 @@
       UI.btn('Descargar copia', { icon: 'download', onclick: function () { U.download(new Blob([RF.store.exportJSON()], { type: 'application/json' }), 'rinde-facil-copia-' + U.todayISO() + '.json'); } }),
       UI.btn('Cargar una copia', { icon: 'file', onclick: function () { fi.click(); } }),
       UI.btn('Borrar todo en este dispositivo', { icon: 'trash', cls: 'ghost danger', onclick: function () { UI.confirmBox('Se borrarán proyectos, gastos, fotos y la cuenta de ESTE dispositivo. Lo que esté en el Drive de la comunidad no se toca. ¿Seguro?', 'Borrar todo').then(function (ok) { if (ok) RF.auth.wipeDevice().then(function () { location.hash = '#/'; location.reload(); }); }); } })),
-      h('p', { class: 'hint' }, 'La copia no incluye las fotos de los comprobantes: quedan en este dispositivo.')]));
+      h('p', { class: 'hint' }, 'La copia no incluye las fotos de los comprobantes: quedan en este dispositivo. El JSON contiene datos de terceros sin cifrar; guárdalo en un lugar protegido.')]));
     return page('Nube y copias', 'Lo que quede en este dispositivo puedes respaldarlo y llevarlo a otro.', root);
   } };
 
-  RF.rendicion = { fixTarget: fixTarget, rendicionDoc: rendicionDoc, expedienteDoc: expedienteDoc, comparacionesGastos: comparacionesGastos, newExpense: newExpense, addExpenseWithReceipt: addExpenseWithReceipt, avisoAdminGuardada: avisoAdminGuardada };
+  RF.rendicion = { gastosDoc: gastosDoc, sgpDelimited: sgpDelimited, fixTarget: fixTarget, rendicionDoc: rendicionDoc, expedienteDoc: expedienteDoc, comparacionesGastos: comparacionesGastos, newExpense: newExpense, addExpenseWithReceipt: addExpenseWithReceipt, avisoAdminGuardada: avisoAdminGuardada };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -24,6 +24,8 @@
     hasPreview: function (tid) { return !!(RF.forms.SCHEMAS[tid] || { gantt: 1, presupuesto: 1, pea: 1, reitem: 1, informe: 1 }[tid]); },
     model: function (tid) {
       var ctx = RF.forms.ctxNow(), p = ctx.project; if (!p) return null;
+      /* el registro de viaje alimenta el Anexo 4 (certificado de viático): su formato oficial es ese anexo */
+      if (tid === 'viaje') tid = 'anexo4';
       if (tid === 'gantt') return RF.plan.ganttDoc(p, ctx.community);
       if (tid === 'presupuesto') return RF.plan.budgetDoc(p, ctx.community);
       if (tid === 'pea') return RF.plan.peaDoc(p, ctx);
@@ -90,8 +92,7 @@
         body.appendChild(h('section', { class: 'card warn-card' },
           h('h2', { class: 'card-title' }, 'Esto no estaba en tu PEA aprobado'),
           h('ul', null, (p.needsAdded || []).map(function (a) { return h('li', null, (RF.needs.BY_ID[a.id] || { name: a.id }).name); }).concat((p.needsCustom || []).filter(function (c) { return c.afterPea; }).map(function (c) { return h('li', null, c.name); }))),
-          h('p', null, 'Antes de gastar en algo que tu PEA no contempla, conviene modificar el PEA. Según los documentos del Acuerdo, un proyecto puede cambiar en tiempo, actividades y presupuesto si la comunidad lo pide: la reitemización agrega actividades o cambia fechas y presupuesto; la reprogramación cambia solo los plazos.'),
-          h('p', null, 'Los aumentos de presupuesto se aprueban en asamblea y se envían a CORFO con el acta de asamblea o extracto; después, con la aprobación de CORFO, se configuran en SGP.'),
+          h('p', null, 'Todo gasto fuera del PEA requiere aprobación previa de CORFO. Si aumenta el presupuesto, primero debe aprobarlo la asamblea; luego adjunta y envía a CORFO el acta de asamblea o su extracto. Tras la aprobación de CORFO, actualiza SGP.'),
           h('div', { class: 'row-actions' },
             UI.btn('Preparar la solicitud de cambio', { icon: 'edit', cls: 'primary', onclick: function () { location.hash = '#/h/reitem?from=TRM-028'; } }),
             UI.btn('Ver el paso «Actualización de proyecto»', { icon: 'route', onclick: function () { location.hash = '#/t/TRM-028'; } }),

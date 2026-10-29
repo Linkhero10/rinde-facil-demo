@@ -87,6 +87,9 @@
 
   /* ---------- campos ---------- */
   var money = U.fmtNum;
+  function rutHint(hint) {
+    return (hint ? hint + ' ' : '') + 'Ejemplo: 12.345.678-5 (con puntos y guion; el dígito verificador puede ser K)';
+  }
   function labelWrap(label, control, hint, cls) {
     return h('label', { class: 'field ' + (cls || '') }, h('span', { class: 'lbl' }, label), control, hint ? h('span', { class: 'hint' }, hint) : null);
   }
@@ -146,6 +149,7 @@
   }
   function field(label, obj, key, opts) {
     opts = opts || {};
+    if (opts.type === 'rut') opts = Object.assign({}, opts, { hint: rutHint(opts.hint) });
     var el = bind(obj, key, opts);
     if (opts.type === 'check') return h('label', { class: 'check ' + (opts.cls || '') }, el, h('span', null, label), opts.hint ? h('span', { class: 'hint' }, opts.hint) : null);
     var ctl = el;
@@ -181,7 +185,7 @@
     var bar = h('div', { class: 'export-bar', role: 'group', 'aria-label': 'Descargar el documento' });
     function run(kind) {
       var d;
-      try { d = getDoc(); } catch (e) { toast('No se pudo armar el documento: ' + e.message, 'bad'); return; }
+      try { d = kind === 'drive' && RF.drive && RF.drive.documentType(null, base) === 'gastos' ? { sgp: true } : getDoc(); } catch (e) { toast('No se pudo armar el documento: ' + e.message, 'bad'); return; }
       if (!d) return;
       if (kind === 'doc' && RF.exp.rasterizeCharts && (d.blocks || []).some(function (b) { return b.t === 'chart' && !b.png; })) { RF.exp.rasterizeCharts(d).then(function (d2) { RF.exp.downloadWord(d2, base); if (RF.activity) RF.activity.log('documento', 'Sacó «' + String(d.title || base).slice(0, 80) + '» (Word).'); }, function () { toast('No se pudieron preparar los gráficos para el Word.', 'bad'); }); return; }
       if (RF.activity && kind !== 'txt') RF.activity.log('documento', 'Sacó «' + String(d.title || base).slice(0, 80) + '» (' + ({ xlsx: 'Excel', doc: 'Word', pdf: 'PDF', txtfile: 'texto', drive: 'Drive' }[kind] || kind) + ').');
@@ -192,16 +196,16 @@
       else if (kind === 'txtfile') RF.exp.downloadText(d, base);
       /* todo lo que se saca queda también en la carpeta «Rinde fácil» del Drive de la comunidad (salvo copiar texto) */
       if (RF.drive && kind !== 'txt' && (kind === 'drive' || RF.drive.auto())) {
-        RF.drive.saveDoc(d, base, 'xlsx').then(function (r) { if (kind === 'drive' && r && r.unchanged) toast('Ya está en el Drive y no ha cambiado desde la última vez.', 'ok'); }).catch(function () { });
+        RF.drive.saveDoc(d, base).then(function (r) { if (kind === 'drive' && r && r.unchanged) toast('Ya está en el Drive y no ha cambiado desde la última vez.', 'ok'); }).catch(function () { });
       }
     }
     bar.appendChild(h('span', { class: 'export-label' }, 'Descargar documento:'));
-    bar.appendChild(btn('Excel', { icon: 'excel', onclick: function () { run('xlsx'); } }));
+    if (!RF.drive || RF.drive.documentType(null, base) !== 'anexos') bar.appendChild(btn('Excel', { icon: 'excel', onclick: function () { run('xlsx'); } }));
     bar.appendChild(btn('Word', { icon: 'word', onclick: function () { run('doc'); } }));
     bar.appendChild(btn('PDF', { icon: 'pdf', onclick: function () { run('pdf'); } }));
     bar.appendChild(btn('Copiar texto', { icon: 'copy', onclick: function () { run('txt'); } }));
     (extras || []).forEach(function (x) { bar.appendChild(btn(x.label, { icon: x.icon, onclick: x.run })); });
-    if (RF.drive && RF.drive.enabled()) bar.appendChild(btn('Guardar en Drive', { icon: 'cloud', title: 'Guarda una copia Excel en la carpeta «Rinde fácil» de tu Drive', onclick: function () { run('drive'); } }));
+    if (RF.drive && RF.drive.enabled()) bar.appendChild(btn('Guardar en Drive', { icon: 'cloud', title: 'Guarda en la carpeta del proyecto con el formato elegido en Nube y copias', onclick: function () { run('drive'); } }));
     return bar;
   }
 
@@ -280,5 +284,5 @@
     };
   }
 
-  RF.ui = { tip: tip, closeTip: closeTip, choiceBox: choiceBox, promptSecret: promptSecret, busy: busy, icon: icon, ICONS: ICONS, toast: toast, confirmBox: confirmBox, bind: bind, field: field, rutAlSalir: rutAlSalir, labelWrap: labelWrap, btn: btn, exportBar: exportBar, badge: badge, callout: callout, empty: empty, section: section, fileDrop: fileDrop, progressBar: progressBar };
+  RF.ui = { tip: tip, closeTip: closeTip, choiceBox: choiceBox, promptSecret: promptSecret, busy: busy, icon: icon, ICONS: ICONS, toast: toast, confirmBox: confirmBox, bind: bind, field: field, rutHint: rutHint, rutAlSalir: rutAlSalir, labelWrap: labelWrap, btn: btn, exportBar: exportBar, badge: badge, callout: callout, empty: empty, section: section, fileDrop: fileDrop, progressBar: progressBar };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -7,7 +7,7 @@
   var U = RF.util, UI = RF.ui, D = RF.data, L = RF.logic, h = U.h, TOOLS = RF.tools = RF.tools || {};
 
   var PARTS = [
-    { id: 'avance', name: 'Avance de los trámites por fase' },
+    { id: 'avance', name: 'Avance de los pasos por fase' },
     { id: 'rendicion', name: 'Montos por cuenta: aprobado, presupuestado y rendido' },
     { id: 'revision', name: 'Cuántos avisos de la revisión siguen abiertos (sin detalle de los gastos)' },
     { id: 'observaciones', name: 'Observaciones de CORFO abiertas y su plazo' },
@@ -22,8 +22,8 @@
     blocks.push({ t: 'p', text: 'Este resumen lo preparó y lo envía la comunidad, con su autorización, el ' + U.fmtDate(today) + '. No incluye nombres de proveedores, RUT, fotos ni documentos: solo avance y montos.' });
     if (chosen.avance) {
       var pr = L.progress(p);
-      blocks.push({ t: 'h', text: 'Avance de los trámites' });
-      blocks.push({ t: 'table', head: ['Fase', 'Trámites listos', 'Total'], types: ['text', 'text', 'text'], rows: D.FASES.map(function (f) { var x = pr.porFase[f.id]; return [f.n + '. ' + f.name, String(x.tramDone), String(x.tramTotal)]; }).concat([['Total', String(pr.tramDone), String(pr.tramTotal)]]) });
+      blocks.push({ t: 'h', text: 'Avance de los pasos' });
+      blocks.push({ t: 'table', head: ['Fase', 'Pasos listos', 'Total'], types: ['text', 'text', 'text'], rows: D.FASES.map(function (f) { var x = pr.porFase[f.id]; return [f.n + '. ' + f.name, String(x.tramDone), String(x.tramTotal)]; }).concat([['Total', String(pr.tramDone), String(pr.tramTotal)]]) });
     }
     if (chosen.rendicion) {
       var t = L.totalsByCuenta(p);

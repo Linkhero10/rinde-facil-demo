@@ -106,7 +106,7 @@
       } else if (b.t === 'chart') {
         if (fmt === 'html') blocks.push({ t: 'html', html: '<figure class="chart">' + chartSvg(b) + (b.note ? '<figcaption>' + esc(b.note) + '</figcaption>' : '') + '</figure>' });
         else if (fmt === 'docx' && b.png) { blocks.push({ t: 'image', png: b.png, w: b._w || 760, h: b._h || 300 }); if (b.note) blocks.push({ t: 'note', text: b.note }); }
-        else { var cr = chartRows(b); blocks.push({ t: 'p', text: b.title }); blocks.push({ t: 'table', head: cr.head, rows: cr.rows, types: cr.head.map(function (_, i) { return i ? 'money' : 'text'; }) }); }
+        else { var cr = chartRows(b); blocks.push({ t: 'p', text: b.title }); blocks.push({ t: 'table', head: cr.head, rows: cr.rows, types: cr.head.map(function (_, i) { return b.unit === 'pct' ? (i === 1 ? 'pct' : 'text') : i ? 'money' : 'text'; }) }); }
       } else blocks.push(b);
     });
     return Object.assign({}, doc, { blocks: blocks });
@@ -114,6 +114,7 @@
 
   /* los gráficos del Word se dibujan en un lienzo y se guardan como PNG */
   function rasterizeCharts(doc) {
+    if (RF.anexoModelos && RF.anexoModelos.isModel(doc)) return Promise.resolve(doc);
     var jobs = [], blocks = (doc.blocks || []).map(function (b) {
       if (b.t !== 'chart' || b.png) return b;
       var c = Object.assign({}, b), svg = chartSvg(c), W = c._w, H = c._h;

@@ -360,16 +360,33 @@
   formTool('anexo3', 'form', 'Quien recibe un pago en efectivo firma que le pagaron.', 'Crea una declaración por cada pago en efectivo. Si eliges el gasto, se rellena sola.');
   formTool('anexo4', 'form', 'Certificado de viático: viajero, destino, días y monto.', 'Un certificado por cada persona que viaja.');
   formTool('anexo5', 'form', 'Qué parte de cada gasto de administración es del proyecto.', 'Calcula solo el monto que corresponde según el porcentaje de uso. Si recuperas IVA, anota el neto.');
-  TOOLS.informe = { title: 'Informe técnico (Anexo 6)', icon: 'form', desc: 'Datos generales, objetivos, resumen y todas las fichas en un solo informe.', render: function () {
+  TOOLS.anexos = { title: 'Anexos e informe', icon: 'form', desc: 'Formularios, fichas y descargas de los anexos 1 a 6.', render: function () {
+    var groups = [
+      ['Declaraciones y certificados', ['anexo1', 'anexo2', 'anexo3', 'anexo4', 'anexo5']],
+      ['ANEXO N° 6 INFORME TÉCNICO', ['informe']],
+      ['Fichas A a E del informe', ['informeA', 'informeB', 'informeC', 'informeD', 'informeE']]
+    ];
+    return page('Anexos e informe', 'Elige el documento para completarlo, revisarlo y descargarlo en Excel, Word o PDF. Los datos guardados siguen en cada formulario.',
+      h('div', { class: 'cards-2' }, groups.map(function (g) { return UI.section(g[0], [h('ul', { class: 'item-list' }, g[1].map(function (id) {
+        var t = TOOLS[id]; return h('li', null, h('a', { class: 'mini-card link', href: '#/h/' + id }, h('strong', null, t.title), h('span', { class: 'hint' }, t.desc), h('span', { class: 'hint' }, 'Completar y descargar →')));
+      }))]); })));
+  } };
+  TOOLS.informe = { title: 'ANEXO N° 6 INFORME TÉCNICO', icon: 'form', desc: 'Datos generales, objetivos, resumen y todas las fichas en un solo informe.', render: function () {
     var c = ctx(); if (!c.project) return page('Informe técnico', '', needProject(c));
     var root = h('div');
     var tipo = D.TIPOS_PROYECTO.filter(function (t) { return t.id === c.project.tipo; })[0];
     if (tipo && tipo.informe === 'anexo5') root.appendChild(UI.callout('warn', 'Tu proyecto es de Administración.', ' Para este tipo, el «informe» que se presenta es la memoria de cálculo (Anexo 5), no el Anexo 6.'));
     root.appendChild(RF.forms.renderSingle('informe', c));
+    var avance = h('section', { class: 'card', 'aria-label': 'Avance del informe por ficha' }, h('h2', { class: 'sec-title' }, 'Avance por ficha'),
+      h('p', { class: 'hint' }, 'Programado y real acumulados según cada ficha. Se muestran por separado: las actividades y las personas tienen criterios de avance distintos.'));
+    var charts = RF.forms.avanceFichas(c.project);
+    if (!charts.length) avance.appendChild(UI.empty('Completa el avance acumulado de tus fichas A a E para ver la comparación.'));
+    charts.forEach(function (b) { var chart = h('div', { class: 'table-scroll' }); chart.innerHTML = RF.exp.chartSvg(b); chart.setAttribute('role', 'img'); chart.setAttribute('aria-label', b.title + '. ' + b.items.map(function (r) { return r.label + ': ' + r.text; }).join('. ')); avance.appendChild(chart); });
+    root.appendChild(avance);
     var kinds = [['informeA', 'A · Actividades de la comunidad'], ['informeB', 'B · Estudios y consultorías'], ['informeC', 'C · Infraestructura y activos'], ['informeD', 'D · Personas contratadas'], ['informeE', 'E · Otras actividades']];
     root.appendChild(UI.section('Fichas del informe', [h('div', { class: 'cards-2' }, kinds.map(function (k) { var n = RF.forms.getList(c.project, k[0]).length; return h('a', { class: 'mini-card link', href: '#/h/' + k[0] }, h('strong', null, k[1]), h('p', { class: 'hint' }, n ? n + ' ficha(s)' : 'Sin fichas aún')); }))]));
     root.appendChild(UI.section('Informe completo', [UI.exportBar(function () { return RF.forms.informeCompleto(c); }, 'informe-tecnico')]));
-    return page('Informe técnico (Anexo 6)', 'Cabecera del informe. Las fichas de cada actividad se llenan aparte y se juntan aquí.', root);
+    return page('ANEXO N° 6 INFORME TÉCNICO', 'Cabecera del informe. Las fichas de cada actividad se llenan aparte y se juntan aquí.', root);
   } };
   formTool('informeA', 'form', 'Talleres, capacitaciones y visitas.', 'Una ficha por actividad. Si eliges la actividad de tu Gantt, los montos se rellenan solos.');
   formTool('informeB', 'form', 'Estudios y consultorías contratadas.', 'Una ficha por estudio.');
@@ -378,7 +395,7 @@
   formTool('informeE', 'form', 'Actividades que no calzan en las otras fichas.', 'Descripción, proveedor, montos y fechas.');
   formTool('consulta', 'help', 'Redacta tu duda con los hechos, la norma y el impacto.', 'Mejor preguntar antes de gastar. Guarda la respuesta en tu expediente.');
   formTool('viaje', 'form', 'Anota quién viaja, su rol y por qué es necesario.', 'Un registro por viaje. Sirve para justificar ante CORFO que el viaje era esencial y acompaña los certificados de viático (Anexo 4).');
-  formTool('solicitud', 'file', 'Borrador de la solicitud cuando CORFO cierre tu rendición.', 'Se pide después de que CORFO finaliza la revisión de tu rendición.');
+  formTool('solicitud', 'file', 'Si necesitas aportes, prepara la solicitud mediante el PEA.', 'Puedes solicitar aportes con las rendiciones exigibles aprobadas y al día según el convenio vigente. Indica si son para nuevos proyectos o actividades, gastos administrativos o un instrumento de renta fija. Una fecha de cierre anterior no acredita por sí sola estar al día.');
   formTool('peaGeneral', 'form', 'PEA · información general.', '');
   formTool('peaProyecto', 'form', 'PEA · un formulario por proyecto.', '');
 

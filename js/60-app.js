@@ -59,12 +59,18 @@
   app.applyThemeLabel = applyThemeLabel;
 
   /* ---------- dibujo ---------- */
-  var lastKey = null;
+  var lastKey = null, enteredState = null;
   function render() {
     var r = route(), host = document.getElementById('app'); if (!host) return;
     if (r.name === 'organismo' && !(RF.organismo && RF.organismo.esOrganismo())) r = { name: 'home' }; /* el panel solo es para el Organismo */
     /* sin contraseña no se muestra nada de la comunidad: primero la pantalla de acceso */
     var ph = RF.auth.phase();
+    if (ph !== 'open') enteredState = null;
+    if (ph === 'open' && enteredState !== RF.store.get()) {
+      enteredState = RF.store.get();
+      var initial = RF.estado.proyectoInicial(enteredState);
+      if (initial && enteredState.activeProjectId !== initial.id) RF.store.update(function (s) { s.activeProjectId = initial.id; }, { silent: true });
+    }
     if (ph === 'open') RF.data.useConvenio(RF.store.project()); /* las reglas son las del convenio del proyecto activo */
     /* el panel del Organismo no pasa por la bóveda de una comunidad; su acceso tiene pantalla propia */
     var organismo = !!(RF.organismo && RF.organismo.esOrganismo());
@@ -227,8 +233,4 @@
     } catch (e) { } }
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
-  /* capa de comentarios de la revisión (temporal): se carga en todas las pantallas */
-  var scriptComentarios = document.createElement('script');
-  scriptComentarios.src = 'js/58-comentarios.js';
-  document.head.appendChild(scriptComentarios);
 })(typeof window !== 'undefined' ? window : globalThis);

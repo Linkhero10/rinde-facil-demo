@@ -5,8 +5,24 @@
   var U = RF.util;
 
   /* ---------- fotos en el dispositivo (IndexedDB); nunca salen si no las mandas ---------- */
+  var transientBlobs = new Map();
+  function transientSession() { return RF.auth && RF.auth.esAsistida && RF.auth.esAsistida(); }
+  function cipher() { return RF.auth && RF.auth.esGoogle && RF.auth.esGoogle() ? RF.googleDevice : RF.vault; }
+  var googleDb = null, googleKey = null, googleOpening = null, googleStamp = null;
+  var localWrites = [];
+  function trackWrite(p) {
+    localWrites.push(p);
+    function done() { var i = localWrites.indexOf(p); if (i >= 0) localWrites.splice(i, 1); }
+    p.then(done, done);
+    return p;
+  }
+  RF.localPersistence = {
+    pending: function () { return localWrites.length; },
+    flush: function () { return Promise.all(localWrites.slice()).then(function () { return localWrites.length ? RF.localPersistence.flush() : true; }); }
+  };
   var DB = 'rinde_facil_fotos', STORE = 'imgs', OUTBOX = 'outbox', dbp = null;
   function openDb() {
+    if (googleDb && RF.auth && RF.auth.esGoogle && RF.auth.esGoogle()) return Promise.resolve(googleDb);
     if (dbp) return dbp;
     dbp = new Promise(function (resolve, reject) {
       if (!root.indexedDB) { reject(new Error('sin IndexedDB')); return; }
@@ -18,20 +34,101 @@
     return dbp;
   }
   function tx(mode, fn, storeName) {
-    return openDb().then(function (db) { return new Promise(function (resolve, reject) { var name = storeName || STORE, t = db.transaction(name, mode), st = t.objectStore(name), rq = fn(st); t.oncomplete = function () { resolve(rq && rq.result); }; t.onerror = function () { reject(t.error); }; }); });
+    return openDb().then(function (db) { return txDb(db, mode, fn, storeName || STORE); });
   }
+  function txDb(db, mode, fn, name) {
+    return new Promise(function (resolve, reject) {
+      var t = db.transaction(name, mode), rq = fn(t.objectStore(name));
+      t.oncomplete = function () { resolve(rq && rq.result); };
+      t.onerror = t.onabort = function () { reject(t.error || new Error('NO_GUARDADO')); };
+    });
+  }
+  // Cada comunidad y servicio tiene su propio almacén. La CryptoKey nunca se exporta.
+  // Se guarda por structured clone de IndexedDB, sin contraseña ni tokens persistidos.
+  RF.googleDevice = {
+    isOpen: function () { return !!googleKey; },
+    open: function (url, tenant, initial) {
+      if (googleOpening) return Promise.reject(new Error('INGRESO_EN_CURSO'));
+      googleOpening = root.crypto.subtle.digest('SHA-256', new TextEncoder().encode(url.replace(/\/+$/, '') + '|' + tenant)).then(function (hash) {
+        var scope = Array.from(new Uint8Array(hash)).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+        return new Promise(function (resolve, reject) {
+          if (!root.indexedDB) return reject(new Error('No se puede conservar la copia cifrada de Google en este navegador.'));
+          var rq = root.indexedDB.open('rinde_facil_google_' + scope, 1);
+          rq.onupgradeneeded = function () { [STORE, OUTBOX, 'device'].forEach(function (name) { if (!rq.result.objectStoreNames.contains(name)) rq.result.createObjectStore(name); }); };
+          rq.onsuccess = function () { resolve(rq.result); };
+          rq.onerror = function () { reject(rq.error); };
+        });
+      }).then(function (db) {
+        return txDb(db, 'readonly', function (s) { return s.get('key'); }, 'device').then(function (key) {
+          if (key) return key;
+          var generated = root.crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+          return generated.then(function (k) {
+            // Leer y crear bajo la misma transacción evita dos claves en pestañas concurrentes.
+            return new Promise(function (resolve, reject) {
+              var t = db.transaction('device', 'readwrite'), st = t.objectStore('device'), get = st.get('key'), chosen;
+              get.onsuccess = function () { chosen = get.result || k; if (!get.result) st.put(chosen, 'key'); };
+              t.oncomplete = function () { resolve(chosen); }; t.onerror = t.onabort = function () { reject(t.error || new Error('NO_GUARDADO')); };
+            });
+          });
+        }).then(function (key) {
+          googleDb = db; googleKey = key;
+          return txDb(db, 'readonly', function (s) { return s.get('state'); }, 'device');
+        });
+      }).then(function (rec) {
+        googleStamp = rec && rec.stamp || null;
+        return rec ? RF.crypto.decJson(googleKey, rec, 'google-state') : RF.googleDevice.save(initial).then(function () { return initial; });
+      }).then(function (state) {
+        if (!state || !Array.isArray(state.projects) || !state.cloud || state.cloud.apiUrl !== url || state.cloud.inquilino !== tenant) throw new Error('COPIA_LOCAL_INVALIDA');
+        return state;
+      }).catch(function (e) { googleDb = null; googleKey = null; googleStamp = null; throw e; }).finally(function () { googleOpening = null; });
+      return googleOpening;
+    },
+    save: function (state) {
+      var db = googleDb, key = googleKey, expected = googleStamp;
+      if (!db || !key) return Promise.reject(new Error('BOVEDA_CERRADA'));
+      return RF.crypto.encJson(key, state, 'google-state').then(function (rec) {
+        rec.stamp = RF.crypto.b64(RF.crypto.rand(16));
+        return new Promise(function (resolve, reject) {
+          var t = db.transaction('device', 'readwrite'), st = t.objectStore('device'), rq = st.get('state'), changed = false;
+          rq.onsuccess = function () {
+            if ((rq.result && rq.result.stamp || null) !== expected) { changed = true; return; }
+            st.put(rec, 'state');
+          };
+          t.oncomplete = function () {
+            if (changed) return reject(new Error('Este equipo cambió en otra pestaña. Se conserva lo de esta sesión en memoria; guarda un respaldo antes de recargar.'));
+            googleStamp = rec.stamp; resolve(true);
+          };
+          t.onerror = t.onabort = function () { reject(t.error || new Error('NO_GUARDADO')); };
+        });
+      });
+    },
+    encryptBlob: function (blob) {
+      return blob.arrayBuffer().then(function (buf) { return RF.crypto.encBytes(googleKey, buf, 'google-blob'); }).then(function (e) {
+        return { enc: true, iv: RF.crypto.b64(e.iv), ct: RF.crypto.b64(e.ct), type: blob.type };
+      });
+    },
+    decryptBlob: function (rec) {
+      return RF.crypto.decBytes(googleKey, RF.crypto.ub64(rec.iv), RF.crypto.ub64(rec.ct), 'google-blob').then(function (bytes) { return new Blob([bytes], { type: rec.type }); });
+    },
+    close: function () { googleDb = null; googleKey = null; googleStamp = null; }
+  };
   /* con la bóveda abierta, las fotos entran cifradas; las que ya estaban sin cifrar se cifran de a poco (encryptAll) */
   function isBlob(x) { return typeof Blob !== 'undefined' && x instanceof Blob; }
   var blobs = {
+    clearTransient: function () { transientBlobs.clear(); },
     put: function (id, blob) {
       if (!id || !blob) return Promise.reject(new Error('Falta el identificador o el archivo del comprobante.'));
-      var enc = RF.vault && RF.vault.isOpen() ? RF.vault.encryptBlob(blob) : Promise.resolve(blob);
-      return enc.then(function (rec) { return tx('readwrite', function (s) { return s.put(rec, id); }); });
+      if (transientSession()) { transientBlobs.set(id, blob); return Promise.resolve(); }
+      var c = cipher();
+      if (RF.auth && RF.auth.esGoogle && RF.auth.esGoogle() && (!c || !c.isOpen())) return Promise.reject(new Error('BOVEDA_CERRADA'));
+      var enc = c && c.isOpen() ? c.encryptBlob(blob) : Promise.resolve(blob);
+      return trackWrite(enc.then(function (rec) { return tx('readwrite', function (s) { return s.put(rec, id); }); }));
     },
     get: function (id) {
-      return tx('readonly', function (s) { return s.get(id); }).then(function (rec) { return rec && rec.enc && RF.vault ? RF.vault.decryptBlob(rec) : rec; });
+      if (transientSession()) return Promise.resolve(transientBlobs.get(id));
+      return tx('readonly', function (s) { return s.get(id); }).then(function (rec) { return rec && rec.enc && cipher() ? cipher().decryptBlob(rec) : rec; });
     },
-    del: function (id) { return tx('readwrite', function (s) { return s.delete(id); }).catch(function () { return null; }); },
+    del: function (id) { if (transientSession()) { transientBlobs.delete(id); return Promise.resolve(); } return tx('readwrite', function (s) { return s.delete(id); }).catch(function () { return null; }); },
     encryptAll: function () {
       if (!RF.vault || !RF.vault.isOpen()) return Promise.resolve(0);
       return tx('readonly', function (s) { return s.getAllKeys(); }).then(function (keys) {
@@ -51,20 +148,21 @@
   /* ---------- cola de envíos: lo que no se pudo subir al Drive por falta de conexión espera aquí (cifrado) y se reintenta solo ---------- */
   var outbox = {
     add: function (key, label, payload, meta) {
-      if (!RF.vault || !RF.vault.isOpen()) return Promise.reject(new Error('BOVEDA_CERRADA'));
+      var c = cipher();
+      if (!c || !c.isOpen()) return Promise.reject(new Error('BOVEDA_CERRADA'));
       /* ni el nombre del proyecto ni el del archivo quedan a la vista: la clave es un hash y el resto va cifrado */
       var blob = new Blob([JSON.stringify({ label: label, payload: payload, meta: meta || null })], { type: 'application/json' });
       var serviceUrl = meta && meta.serviceUrl ? String(meta.serviceUrl).trim().replace(/\/+$/, '') : '';
       var identity = JSON.stringify(meta && meta.coalesce
         ? { key: String(key), serviceUrl: serviceUrl }
         : { key: String(key), serviceUrl: serviceUrl, payload: payload });
-      return root.crypto.subtle.digest('SHA-256', new TextEncoder().encode(identity)).then(function (d) {
+      return trackWrite(root.crypto.subtle.digest('SHA-256', new TextEncoder().encode(identity)).then(function (d) {
         var id = 'q' + Array.prototype.map.call(new Uint8Array(d), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
-        return RF.vault.encryptBlob(blob).then(function (enc) { return tx('readwrite', function (s) { return s.put({ id: id, at: new Date().toISOString(), tries: 0, status: 'pending', errorCode: null, enc: enc }, id); }, OUTBOX); }).then(function () { return id; });
-      });
+        return c.encryptBlob(blob).then(function (enc) { return tx('readwrite', function (s) { return s.put({ id: id, at: new Date().toISOString(), tries: 0, status: 'pending', errorCode: null, enc: enc }, id); }, OUTBOX); }).then(function () { return id; });
+      }));
     },
     list: function () { return tx('readonly', function (s) { return s.getAll(); }, OUTBOX).then(function (a) { return (a || []).sort(function (x, y) { return x.at < y.at ? -1 : x.at > y.at ? 1 : 0; }); }); },
-    open: function (rec) { return RF.vault.decryptBlob(rec.enc).then(function (b) { return b.text(); }).then(function (t) { return JSON.parse(t); }); },
+    open: function (rec) { return cipher().decryptBlob(rec.enc).then(function (b) { return b.text(); }).then(function (t) { return JSON.parse(t); }); },
     del: function (id) { return tx('readwrite', function (s) { return s.delete(id); }, OUTBOX); },
     bump: function (rec, errorCode, needsAttention) {
       rec.tries = (rec.tries || 0) + 1;
@@ -216,7 +314,8 @@
   var LIMITES = {
     LIMITE_DIARIO: ['se alcanzó el límite diario de lecturas', 'se reinicia a medianoche'],
     LIMITE_SEMANAL: ['se alcanzó el límite semanal de lecturas', 'se reinicia el lunes'],
-    LIMITE_MENSUAL: ['se alcanzó el límite mensual de lecturas', 'se reinicia el día 1 del mes']
+    LIMITE_MENSUAL: ['se alcanzó el límite mensual de lecturas', 'se reinicia el día 1 del mes'],
+    LIMITE_MENSUAL_CLOUD: ['se alcanzó el límite mensual de Cloud Vision', 'se reinicia el día 1 del mes']
   };
   /* el texto del límite alcanzado con el número permitido; null si el código no es de límite */
   function mensajeLimite(codigo, limite) {
@@ -233,6 +332,18 @@
     });
   }
   /* cuántas lecturas quedan: la cuota más restrictiva entre día, semana y mes */
+  function selectorProveedor(onChange) {
+    var h2 = RF.util.h;
+    var drive = h2('option', { value: 'drive' }, '1 · Escaneo con Google Drive');
+    var cloud = h2('option', { value: 'cloud_vision', disabled: false }, '2 · Cloud Vision');
+    var select = h2('select', { 'aria-label': 'Opción de lectura' }, drive, cloud);
+    select.value = 'cloud_vision';
+    select.addEventListener('change', function () {
+      if (select.value !== 'cloud_vision') select.value = 'drive';
+      if (onChange) onChange(select.value);
+    });
+    return select;
+  }
   function lecturasDisponibles(c) {
     var opciones = [{ n: c.diario.restan, cuando: 'mañana (a medianoche)' }];
     if (c.semanal && c.semanal.limite) opciones.push({ n: c.semanal.restan, cuando: 'el lunes (a medianoche)' });
@@ -244,6 +355,7 @@
     var n = function (x) { return Number(x || 0).toLocaleString('es-CL'); };
     var d = c.diario, m = c.mensual, out = [];
     opts = opts || {};
+    if (c.mensualCloud) out.push({ titulo: 'Cloud Vision este mes', texto: n(c.mensualCloud.usadas) + ' de ' + n(c.mensualCloud.limite) + ' · quedan ' + n(c.mensualCloud.restan) + ' · se reinicia el día 1 del mes' });
     out.push({ titulo: 'Hoy', texto: n(d.usadas) + ' de ' + n(d.limite) + ' lecturas · quedan ' + n(d.restan) + ' · se reinicia a medianoche' });
     out.push({ titulo: 'Este mes', texto: m.limite ? n(m.usadas) + ' de ' + n(m.limite) + ' · quedan ' + n(m.restan) : n(m.usadas) + ' lecturas · sin límite mensual configurado' });
     if (opts.word) out.push({ titulo: 'Este Word', texto: 'no gasta lecturas: el Word se lee sin Google.' });
@@ -337,10 +449,12 @@
   }
   /* una foto o un PDF de gasto. Si ya se leyó, se devuelve esa lectura (desdeCache) sin llamar al servicio;
      con forzar («Leer de nuevo») sí se vuelve a leer y se cobra. RF.ocr.recognize solo se llama si hay que leer. */
-  function recognizeCached(file, onStage, forzar) {
+  function recognizeCached(file, onStage, forzar, provider) {
     return identidad(file).then(function (idn) {
       var leerYGuardar = function () {
-        return RF.ocr.recognize(file, onStage).then(function (res) {
+        /* Los PDF se inspeccionan localmente antes de entrar en la ruta OCR. Las fotos conservan su API. */
+        var leer = file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '')) ? recognize : RF.ocr.recognize;
+        return leer(file, onStage, provider).then(function (res) {
           if (!res || !res.ok) return res;
           return guardarLectura(idn.id, 'doc', res).then(function (ok) { return ok ? anotarDocumento(idn, 1) : null; }).then(function () { return res; });
         });
@@ -356,31 +470,71 @@
   }
 
   /* Lee un comprobante con Google Cloud Vision a través del servicio de la comunidad. */
-  function recognize(file, onStage) {
+  function recognize(file, onStage, provider) {
     if (file && file.size > OCR_MAX_BYTES) return Promise.reject(archivoGrande());
     var say = function (id, label) { if (onStage) onStage(id, label); };
+    var esPdf = file && (file.type === 'application/pdf' || /\.pdf$/i.test(file.name || ''));
+    if (esPdf) {
+      if (!RF.pdfPages || !RF.pdfPages.preparePages || !RF.pdfPages.aggregate || !RF.ocr.recognizePage) return Promise.reject(new Error('No está cargada la lectura de PDF por páginas en esta versión.'));
+      var inicio = Date.now(), porPaginas = false;
+      say('prep', 'Preparando el PDF…');
+      return bytesDe(file).then(function (buf) {
+        return RF.pdfPages.preparePages(buf, function (num, total) { say('prep', 'Preparando la página ' + num + ' de ' + total + '…'); }, null, file.size <= PDF_DIRECTO_MAX);
+      }).then(function (rendered) {
+        if (!rendered) return recognizeWhole(file, say, true, provider);
+        porPaginas = true;
+        var results = [], chain = Promise.resolve();
+        /* Solo las páginas sin texto útil consumen una lectura de la cuota. */
+        rendered.pages.forEach(function (p) {
+          chain = chain.then(function () {
+            if (p.result) { results.push(p.result); return null; }
+            say('read', 'Leyendo la página ' + p.number + ' de ' + rendered.total + '…');
+            return RF.ocr.recognizePage(p.blob, p.number, function (intento) {
+              say('read', 'Reintentando la página ' + p.number + ' de ' + rendered.total + ' (intento ' + intento + ' de 3)…');
+            }, provider).then(function (r) { results.push(r); });
+          });
+        });
+        /* Los rechazos de servicio cortan la cadena y se propagan sin cambiar. */
+        return chain.then(function () { return RF.pdfPages.aggregate(results, rendered.total); });
+      }).then(function (res) {
+        if (!porPaginas) return res;
+        if (!res.ok) {
+          var faltantes = res.failedPages.map(function (p) { return p.number; }).concat(res.missingPages);
+          res.raw_text = ''; res.pages = []; res.pageTexts = [];
+          if (faltantes.length) res.error = 'No se pudieron leer las páginas ' + faltantes.join(', ') + '. No se aplicó la lectura parcial.';
+          else if (res.document_coverage !== 'COMPLETE') res.error = 'No se pudo completar la lectura del PDF. No se aplicó la lectura parcial.';
+        }
+        res.confidence = null; res.duration_ms = Date.now() - inicio; res._blob = file;
+        return res;
+      });
+    }
+    return recognizeWhole(file, say, false, provider);
+  }
+
+  function recognizeWhole(file, say, esPdf, provider) {
     say('prep', 'Preparando la foto…');
     return downscale(file).then(function (blob) {
       return blobToBase64(blob).then(function (b64) {
         say('read', 'Enviando la foto y leyéndola con Google…');
-        return postRetry('ocr', { fileName: file.name || 'comprobante', mimeType: blob.type || file.type || 'image/jpeg', base64: b64 }, 120000, function (r) { return !!(r && (r.ok === false || r.engine)); }, function () { say('read', 'Google no respondió bien. Reintentando…'); }).then(function (res) { res._blob = blob; return res; });
+        return postRetry('ocr', { provider: provider || 'cloud_vision', fileName: file.name || 'comprobante', mimeType: esPdf ? 'application/pdf' : (blob.type || file.type || 'image/jpeg'), base64: b64 }, 120000, function (r) { return !!(r && (r.ok === false || r.engine)); }, function () { say('read', 'Google no respondió bien. Reintentando…'); }).then(function (res) { res._blob = blob; return res; });
       });
     });
   }
 
   /* Límite de transporte sobre el archivo bruto, antes de reducirlo o convertirlo a base64. */
   var OCR_MAX_BYTES = 7 * 1024 * 1024;
+  var PDF_DIRECTO_MAX = 1.8 * 1024 * 1024;
   function archivoGrande() { return Object.assign(new Error('El archivo pesa más de 7 MB. Usa una foto más pequeña o un PDF con menos páginas.'), { code: 'ARCHIVO_MUY_GRANDE' }); }
   function validarArchivo(file) { return file && file.size > OCR_MAX_BYTES ? archivoGrande() : null; }
   /* Lee el PDF sin límite de páginas por archivo. */
-  function recognizeDocument(file, onStage) {
+  function recognizeDocument(file, onStage, provider) {
     var say = function (id, label) { if (onStage) onStage(id, label); };
     if (!file) return Promise.reject(new Error('Falta el archivo PDF.'));
     if (file.size > OCR_MAX_BYTES) return Promise.reject(archivoGrande());
     say('prep', 'Preparando el PDF…');
     return blobToBase64(file).then(function (b64) {
       say('read', 'Leyendo el PDF con Google… puede tardar varios minutos.');
-      return postRetry('ocr', { fileName: file.name || 'documento.pdf', mimeType: 'application/pdf', base64: b64 }, 300000, function (r) { return !!(r && (r.ok === false || r.engine || r.pages || r.pages_layout)); }, function () { say('read', 'Google no respondió bien. Reintentando…'); });
+      return postRetry('ocr', { provider: provider || 'cloud_vision', fileName: file.name || 'documento.pdf', mimeType: 'application/pdf', base64: b64 }, 300000, function (r) { return !!(r && (r.ok === false || r.engine || r.pages || r.pages_layout)); }, function () { say('read', 'Google no respondió bien. Reintentando…'); });
     }).then(function (res) {
       res = res || {};
       var completo = !res.document_coverage || res.document_coverage === 'COMPLETE';
@@ -405,8 +559,8 @@
      onRetry(intento) avisa cada reintento (intento 2 o 3). Una hoja sin texto cuenta como leída (en blanco).
      No usa postRetry: ese reintenta una sola vez y no vuelve a validar la respuesta, y también lo usa el escaneo de recibos. */
   var PAGINA_REINTENTOS = 2;
-  var FALLO_TODO = /^(NO_CONFIGURADO|OCR_NO_CONFIGURADO|SERVICIO_NO_APROBADO|CLAVE_DISTINTA|SIN_CUENTA|BLOQUEADO|BLOQUEADA|SESION_INVALIDA|LIMITE_DIARIO|LIMITE_SEMANAL|LIMITE_MENSUAL|TIPO_NO_PERMITIDO)$/;
-  var FALLO_PASAJERO = /^(TIMEOUT|RESPUESTA_INVALIDA|OCUPADO)$|Failed to fetch|NetworkError|Load failed|^Cloud Vision HTTP (408|429|5\d\d)$/;
+  var FALLO_TODO = /^(NO_CONFIGURADO|OCR_NO_CONFIGURADO|SERVICIO_NO_APROBADO|CLAVE_DISTINTA|SIN_CUENTA|BLOQUEADO|BLOQUEADA|SESION_INVALIDA|LIMITE_DIARIO|LIMITE_SEMANAL|LIMITE_MENSUAL|LIMITE_MENSUAL_CLOUD|CLOUD_VISION_NO_DISPONIBLE|TIPO_NO_PERMITIDO|OCR_PERMISO_DENEGADO|OCR_PROVEEDOR_NO_HABILITADO|OCR_CONCILIACION_PENDIENTE|OCR_REGISTRO_NO_DISPONIBLE|OCR_LIMPIEZA_PENDIENTE|OCR_CUOTA_PROVEEDOR)$/;
+  var FALLO_PASAJERO = /^(TIMEOUT|RESPUESTA_INVALIDA|OCUPADO|OCR_PROVEEDOR_NO_DISPONIBLE|OCR_TIEMPO_AGOTADO)$|Failed to fetch|NetworkError|Load failed|^Cloud Vision HTTP (408|429|5\d\d)$/;
   var SIN_TEXTO = /SIN_TEXTO|no devolvió texto/;
   /* 'todo' = no tiene sentido seguir con el PDF; 'pasajero' = se puede reintentar; 'pagina' = esta página no se pudo leer */
   function tipoFallo(e) {
@@ -414,6 +568,12 @@
     if (FALLO_TODO.test(cod)) return 'todo';
     if ((e && (e.httpStatus === 404 || e.httpStatus === 429 || e.httpStatus >= 500)) || FALLO_PASAJERO.test(cod)) return 'pasajero';
     return 'pagina';
+  }
+  function requiereIngresoManual(file, error) {
+    if (!file) return false;
+    var tipo = tipoFallo(error);
+    var pdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+    return pdf ? tipo === 'todo' : tipo !== 'pasajero';
   }
   function esperar(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
   /* error del servicio con sus datos (límite y lecturas contadas): así se explica por qué se detuvo la lectura */
@@ -444,11 +604,11 @@
     if (m === 'OCUPADO') return 'el servicio estaba ocupado';
     return humanError(e);
   }
-  function recognizePage(blob, number, onRetry) {
+  function recognizePage(blob, number, onRetry, provider) {
     if (!blob) return Promise.resolve(paginaFallida(number, 'no se pudo convertir la página en imagen'));
     if (blob.size > OCR_MAX_BYTES) return Promise.resolve(paginaFallida(number, 'la imagen pasa de 7 MB'));
     return blobToBase64(blob).then(function (b64) {
-      return intentarPagina({ fileName: 'pagina-' + number + '.jpg', mimeType: 'image/jpeg', base64: b64 }, 0, onRetry);
+      return intentarPagina({ provider: provider || 'cloud_vision', fileName: 'pagina-' + number + '.jpg', mimeType: 'image/jpeg', base64: b64 }, 0, onRetry);
     }).then(function (res) {
       return paginaDesde(number, res);
     }, function (e) {
@@ -485,6 +645,10 @@
   /* explica un error de conexión sin tecnicismos («Failed to fetch» no le dice nada a nadie) */
   function humanError(e) {
     var m = String((e && e.message) || e || '');
+    if (m === 'ARCHIVO_DEMASIADO_GRANDE') return 'El archivo supera los 2 MB. Usa una foto o PDF más pequeño.';
+    if (m === 'CLOUD_VISION_NO_DISPONIBLE') return 'No disponible temporalmente';
+    if (m === 'LIMITE_MENSUAL_CLOUD') return mensajeLimite(m, 1000);
+    if (m === 'OCR_LIMPIEZA_PENDIENTE') return 'No se pudo completar la limpieza del OCR. Avisa al Organismo antes de repetir la lectura.';
     if (/Failed to fetch|NetworkError|Load failed|ERR_INTERNET|fetch/i.test(m)) return 'No hay conexión a internet, o el servicio no responde.';
     if (/TIMEOUT|abort/i.test(m)) return 'El servicio tardó demasiado en responder.';
     if (/HTTP 404/.test(m)) return 'No se encontró el servicio (error 404). Si acaban de actualizarlo en Apps Script, espera un minuto y vuelve a intentar.';
@@ -494,6 +658,6 @@
   }
   RF.cloud = { approvedUrls: approvedUrls, humanError: humanError, configured: configured, validUrl: validUrl, trustedUrl: trustedUrl, post: post, postRaw: postRaw, postRawTo: postRawTo, postRetry: postRetry, ping: ping, downscale: downscale, blobToBase64: blobToBase64 };
   RF.ocr = { recognize: recognize, recognizeDocument: recognizeDocument, recognizePage: recognizePage, validarArchivo: validarArchivo, toExpenseFields: toExpenseFields,
-    cuota: cuota, lineasLimites: lineasLimites, lecturasDisponibles: lecturasDisponibles, tarjetaLimites: tarjetaLimites, mensajeLimite: mensajeLimite,
+    cuota: cuota, selectorProveedor: selectorProveedor, requiereIngresoManual: requiereIngresoManual, lineasLimites: lineasLimites, lecturasDisponibles: lecturasDisponibles, tarjetaLimites: tarjetaLimites, mensajeLimite: mensajeLimite,
     identidad: identidad, leerGuardada: leerGuardada, guardarLectura: guardarLectura, documentoGuardado: documentoGuardado, anotarDocumento: anotarDocumento, recognizeCached: recognizeCached };
 })(typeof window !== 'undefined' ? window : globalThis);

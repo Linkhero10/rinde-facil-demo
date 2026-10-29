@@ -14,7 +14,7 @@
     var q = input.value.trim();
     if (!q) {
       status.textContent = '';
-      list.appendChild(h('li', { class: 'sr-hint' }, h('p', null, 'Escribe lo que buscas. Busca en los trámites, las herramientas, el mapa de quién hace qué, las reglas del Manual y también en lo que ya anotaste.'),
+      list.appendChild(h('li', { class: 'sr-hint' }, h('p', null, 'Escribe lo que buscas. Busca en los pasos, las herramientas, el mapa de quién hace qué, las reglas del Manual y también en lo que ya anotaste.'),
         h('p', { class: 'sr-try' }, 'Prueba con: ', SUGGEST.map(function (w) { return h('button', { type: 'button', class: 'chip', onclick: function () { input.value = w; run(); input.focus(); } }, w); }))));
       return;
     }

@@ -17,6 +17,15 @@
 
   function num(x) { return Number(x) || 0; }
 
+  /* Al entrar a una comunidad se muestra primero un proyecto de ejecución.
+   * La administración sigue disponible para elegirla explícitamente después. */
+  function proyectoInicial(state) {
+    var projects = (state && state.projects) || [];
+    var active = projects.filter(function (p) { return p.id === state.activeProjectId; })[0];
+    if (active && !RF.store.esAdmin(active)) return active;
+    return projects.filter(function (p) { return !RF.store.esAdmin(p); })[0] || projects[0] || null;
+  }
+
   function faseInfo(id) {
     var f = (D.FASES || []).filter(function (x) { return x.id === id; })[0];
     return { id: id, name: f ? f.name : id };
@@ -122,6 +131,7 @@
   }
 
   RF.estado = {
+    proyectoInicial: proyectoInicial,
     SIN_MOVIMIENTO_DIAS: SIN_MOVIMIENTO_DIAS,
     POR_VENCER_DIAS: POR_VENCER_DIAS,
     ESTADOS: ESTADOS,

@@ -58,6 +58,7 @@
   function put(meta, dek, state, expect, expectLegacy) {
     return C.encJson(dek.key || dek, state, 'state').then(function (enc) {
       meta.state = enc; meta.savedAt = new Date().toISOString();
+      meta.serviceLinked = !!(state.cloud && state.cloud.inquilino && state.cloud.apiUrl);
       if (expect !== undefined && ls().getItem(KEY) !== expect) throw fail('CAMBIO_LOCAL', 'Este equipo cambió en otra pestaña. No se guardó nada; recarga la página.');
       if (expectLegacy !== undefined && ls().getItem(LEGACY) !== expectLegacy) throw fail('CAMBIO_LOCAL', 'La copia anterior de este equipo cambió mientras se traía la cuenta. No se cambió nada; vuelve a intentar.');
       writeMeta(meta);

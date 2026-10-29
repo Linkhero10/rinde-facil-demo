@@ -182,6 +182,7 @@
           })()),
           h('td', null, UI.btn('Quitar', { cls: 'ghost small', onclick: function () { c.desembolsos.splice(i, 1); save(); paint(); } }))));
       });
+      box.appendChild(h('p', { class: 'hint', id: 'ayuda-tramo' }, 'Tramo identifica el desembolso dentro del fondo, tal como figura en el documento de transferencia o en el convenio. Copia esa referencia; si no está indicada, déjalo vacío.'));
       box.appendChild(h('div', { class: 'table-scroll' }, h('table', { class: 'edit-grid', 'aria-label': 'Desembolsos y montos asignados' }, h('thead', null, h('tr', null, ['Fondo', 'Tramo', 'Monto', 'Moneda', 'Fecha', 'Transferido', ''].map(function (x) { return h('th', null, x); }))), tb)));
       box.appendChild(UI.btn('Agregar desembolso', { cls: 'primary', icon: 'plus', onclick: function () {
         if (!Array.isArray(c.desembolsos)) c.desembolsos = [];
@@ -212,6 +213,16 @@
         h('div', { class: 'ring-wrap' }, UI.progressBar(prog.tramDone, prog.tramTotal, 'Avance total'), h('span', { class: 'ring-t' }, prog.tramDone + ' de ' + prog.tramTotal + ' pasos listos'))),
       nt ? h('p', { class: 'next-step' }, 'Siguiente paso: ', h('strong', null, nt.steps[nx.stepIdx])) : null));
     root.appendChild(budgetSummary(s.projects));
+    /* Plazos funcionales conservados, con la presentación de alertas original. */
+    var observationItems = [];
+    (p.observations || []).filter(function (o) { return !o.respondida; }).forEach(function (o) {
+      var deadline = o.recibida ? L.aclaracionDeadline(o.recibida, RF.holidays.all()) : '';
+      observationItems.push({ level: deadline && deadline < U.todayISO() ? 'error' : 'warn', msg: 'Observación: ' + (o.titulo || 'Sin título') + '. ' + (deadline ? 'Plazo: ' + U.fmtDate(deadline) + '. ' : 'Anota la fecha de recepción. ') + 'Tienes 10 días hábiles para aclarar, por única vez.', href: '#/h/observaciones' });
+    });
+    if (observationItems.length) root.appendChild(UI.section('Observaciones por responder', [h('ul', { class: 'check-list' }, observationItems.map(function (i) {
+      return h('li', { class: 'lv-' + i.level }, h('span', { class: 'lv-ico' }, UI.icon('alert', 18)), h('span', { class: 'lv-msg' }, i.msg), h('a', { class: 'btn ghost small', href: i.href }, 'Abrir'));
+    }))]));
+    if (RF.store.esAdmin(p)) root.appendChild(UI.callout('info', 'Tope de administración: ', U.fmtCLP(D.REGLAS.ADMIN_TOPE_MENSUAL) + ' al mes, según el convenio del proyecto.'));
     root.appendChild(desembolsos());
     if (!nx && !flagged.some(function (i) { return i.level === 'error'; }) && RF.dash) root.appendChild(RF.dash.congrats(p));
     if (!L.needsAnswered(p)) root.appendChild(h('section', { class: 'card need-banner' }, h('h2', { class: 'card-title' }, 'Cuéntanos qué necesitará tu proyecto'), h('p', null, 'La app te muestra los pasos que te tocan. Lo puedes cambiar cuando quieras.'), h('a', { class: 'btn primary', href: '#/h/necesidades' }, 'Marcar lo que necesito')));
@@ -310,9 +321,9 @@
   }
   function tramiteView(id) {
     var t = RF.tramites.byId[id], p = project(), root = h('div', { class: 'view tramite' });
-    if (!t) return h('div', { class: 'view' }, UI.callout('bad', 'No encontramos ese trámite.', ''));
+    if (!t) return h('div', { class: 'view' }, UI.callout('bad', 'No encontramos ese paso.', ''));
     RF.app.lastTramite = id;
-    var f = fase(t.fase), ix = ORDER.indexOf(id), prev = ORDER[ix - 1], next = ORDER[ix + 1];
+    var f = fase(t.fase), relevant = ORDER.filter(function (tid) { return tid === id || !p || !L.itemProgress(p, tid).auto; }), ix = relevant.indexOf(id), prev = relevant[ix - 1], next = relevant[ix + 1];
     var ip = L.itemProgress(p || { done: {} }, id);
     root.appendChild(h('div', { class: 'crumbs' }, h('a', { href: '#/' }, 'Mi ruta'), ' › ', f ? h('a', { href: '#/f/' + f.id }, 'Fase ' + f.n + ': ' + f.name) : '¿Tienes una duda?'));
     root.appendChild(h('div', { class: 'tram-nav' }, prev ? h('a', { class: 'btn ghost small', href: '#/t/' + prev, 'aria-label': 'Anterior: ' + RF.tramites.byId[prev].title }, UI.icon('left', 16), 'Anterior') : h('span'), next ? h('a', { class: 'btn ghost small', href: '#/t/' + next, 'aria-label': 'Siguiente: ' + RF.tramites.byId[next].title }, 'Siguiente', UI.icon('right', 16)) : h('span')));
@@ -360,7 +371,7 @@
       stepsBox.appendChild(li);
     });
     updCount();
-    var naBox = h('label', { class: 'check na-check' }, h('input', { type: 'checkbox', checked: !!(p && p.na && p.na[id]), disabled: !p, onchange: function (ev) { RF.store.update(function () { p.na = p.na || {}; if (ev.target.checked) p.na[id] = true; else delete p.na[id]; }); } }), h('span', null, 'Este trámite no me aplica'));
+    var naBox = h('label', { class: 'check na-check' }, h('input', { type: 'checkbox', checked: !!(p && p.na && p.na[id]), disabled: !p, onchange: function (ev) { RF.store.update(function () { p.na = p.na || {}; if (ev.target.checked) p.na[id] = true; else delete p.na[id]; }); } }), h('span', null, 'Este paso no me aplica'));
     root.appendChild(h('section', { class: 'card steps-card' }, h('div', { class: 'card-title-row' }, h('h2', { class: 'card-title' }, 'Pasos'), counter), stepsBox, h('div', { class: 'row-actions between' }, UI.btn('Marcar todos', { cls: 'ghost small', onclick: function () { var r = marcarTodos(t, id); if (r.saltados.length) UI.toast('Todavía falta: ' + r.motivo + '. No marqué los pasos de ese formulario.', 'bad'); RF.app.render(); } }), naBox)));
     /* herramientas */
     var restTools = (t.tools || []).filter(function (x) { return !shownTools[x]; });

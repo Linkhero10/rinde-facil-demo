@@ -8,15 +8,15 @@
   var NS = 'http://www.w3.org/2000/svg';
 
   function stepEl(id, here) {
-    var s = D.FLOW[id], actor = s[0], dec = id.charAt(0) === 'D';
+    var s = D.FLOW[id], actor = s[0], dec = id.charAt(0) === 'D', support = s[7] === 'apoyo';
     var col = LANES.indexOf(actor) + 1;
     var chips = [];
     if (s[3]) chips.push(h('span', { class: 'chip-t' + (/sin plazo/.test(s[3]) ? ' warn' : '') }, s[3]));
     if (s[4]) chips.push(h('span', { class: 'chip-t loop' }, '↺ ' + s[4]));
     if (id === 'D1') chips.push(h('span', { class: 'chip-t' }, '→ Sí, lo aprueba: paso 19'));
     return h('button', { type: 'button', class: 'fstep' + (dec ? ' decision' : '') + (here ? ' here' : ''), 'data-id': id, 'data-actor': actor, 'aria-pressed': 'false',
-      style: { '--c': 'var(--' + actor + ')', gridColumn: String(col) }, 'aria-label': (dec ? 'Decisión' : 'Paso ' + id) + ': ' + s[1] + '. Le toca a ' + NAME[actor] },
-      h('span', { class: 'who-tag' }, NAME[actor]), dec ? null : h('span', { class: 'step-num' }, id), h('span', { class: 'step-title' }, s[1]), chips);
+      style: { '--c': 'var(--' + actor + ')', gridColumn: String(col) }, 'aria-label': (support ? 'Apoyo opcional' : dec ? 'Decisión' : 'Paso ' + id) + ': ' + s[1] + '. Le toca a ' + NAME[actor] },
+      h('span', { class: 'who-tag' }, NAME[actor]), dec ? null : h('span', { class: 'step-num' }, support ? 'Apoyo opcional' : id), h('span', { class: 'step-title' }, s[1]), chips);
   }
 
   function draw(block) {
@@ -89,7 +89,7 @@
     function select(id) {
       U.$$('.fstep', wrap).forEach(function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-id') === id ? 'true' : 'false'); });
       var s = D.FLOW[id]; inspector.style.setProperty('--c', 'var(--' + s[0] + ')'); U.clear(inspector);
-      inspector.appendChild(h('div', { class: 'ins-head' }, h('strong', null, (id.charAt(0) === 'D' ? 'Decisión: ' : 'Paso ' + id + ': ') + s[1]), h('span', { class: 'ins-actor' }, NAME[s[0]])));
+      inspector.appendChild(h('div', { class: 'ins-head' }, h('strong', null, (s[7] === 'apoyo' ? 'Apoyo opcional: ' : id.charAt(0) === 'D' ? 'Decisión: ' : 'Paso ' + id + ': ') + s[1]), h('span', { class: 'ins-actor' }, NAME[s[0]])));
       inspector.appendChild(h('p', null, s[2]));
       if (s[3]) inspector.appendChild(h('p', null, h('strong', null, 'Plazo: '), s[3]));
       if (s[4]) inspector.appendChild(h('p', null, h('strong', null, 'Si hay observaciones: '), s[4].toLowerCase() + '.'));

@@ -1,6 +1,6 @@
 /* Rinde Fácil — lleva a la carpeta «Rinde fácil» del Drive de la comunidad todo lo que la app genera o recibe.
  * Usa el servicio de la comunidad (backend/WebApi.gs): nada pasa por un servidor central.
- * Nunca borra: si un documento cambia, el servicio guarda una versión nueva con la fecha y hora en el nombre. */
+ * Conserva versiones salvo el Excel consolidado de gastos, que refleja el estado actual del proyecto. */
 (function (root) {
   'use strict';
   var RF = root.RF = root.RF || {};
@@ -11,8 +11,43 @@
   function cfg() { return RF.store.get().cloud; }
   function serviceKey() { return String(cfg().apiUrl || '').trim().replace(/\/+$/, ''); }
   function enabled() { return RF.cloud.configured(); }
-  function auto() { return enabled() && cfg().autoSave !== false; }
+  function auto() { return enabled(); }
   function projectName() { var p = RF.store.project(); return p ? (p.name || 'Proyecto sin nombre') : 'Sin proyecto'; }
+  var FORMAT_OPTIONS = { anexos: ['docx', 'pdf'], gastos: ['xlsx', 'pdf'], resumenes: ['pdf', 'xlsx'] };
+  function documentType(doc, base) {
+    var b = String(base || (doc && doc.sheet) || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[-_]+/g, ' ');
+    if (doc && (doc.anexoModelo || doc.anexoDocumentos) || /^(anexo\s*\d|informe tecnico|ficha\s*[a-e](?:\s|$))/.test(b)) return 'anexos';
+    if (doc && doc.sgp || /^(rendicion gastos|boletas?(?:\s|$)|gastos?(?:\s|$))/.test(b)) return 'gastos';
+    if (doc && doc.report || /^(resumen|reporte)(?:\s|$)/.test(b)) return 'resumenes';
+    return 'otros';
+  }
+  function formatFor(doc, base, fallback) {
+    var type = documentType(doc, base), options = FORMAT_OPTIONS[type];
+    if (!options) return fallback || 'xlsx';
+    var selected = ((RF.store.get().ui || {}).driveFormats || {})[type];
+    return options.indexOf(selected) >= 0 ? selected : options[0];
+  }
+  function setFormat(type, format) {
+    if (!Object.prototype.hasOwnProperty.call(FORMAT_OPTIONS, type) || FORMAT_OPTIONS[type].indexOf(format) < 0) throw new Error('Formato no permitido para este tipo de documento.');
+    RF.store.update(function (s) { s.ui.driveFormats = Object.assign({}, s.ui.driveFormats || {}); s.ui.driveFormats[type] = format; }, { silent: true });
+  }
+  function gastosPayload(project, format) {
+    if (!project) throw new Error('El proyecto del consolidado ya no existe.');
+    var E = RF.exp, doc = RF.rendicion.gastosDoc(project);
+    var payload = { project: project.name || 'Proyecto sin nombre', category: 'rendicion', fileName: 'Gastos - ' + (project.name || 'Proyecto sin nombre') + '.' + format };
+    if (format === 'pdf') { payload.mimeType = 'application/pdf'; payload.pdfFromHtml = true; payload.base64 = textToB64(E.docToHtml(doc)); }
+    else { payload.mimeType = XLSX; payload.replaceProjectExpenses = true; payload.base64 = bytesToB64(E.buildXlsx(E.docToSheets(doc).slice(0, 1))); }
+    return payload;
+  }
+  function saveGastos(project, quiet, expenseId) {
+    try {
+      return send(gastosPayload(project, formatFor({ sgp: true }, 'rendicion-gastos')), 'Gastos del proyecto', quiet,
+        { kind: 'gastos', projectId: project.id, expId: expenseId, coalesce: true });
+    } catch (error) {
+      RF.ui.toast('No se pudieron preparar los gastos del proyecto: ' + error.message, 'bad');
+      return Promise.reject(error);
+    }
+  }
   function errText(e) { return ERRORS[e] || String(e || 'error desconocido'); }
 
   /* A qué carpeta va cada documento según cómo se llama el archivo que se saca */
@@ -39,11 +74,12 @@
   function retryable(e) {
     if (!e) return false;
     var code = String(e.code || '').toUpperCase(), message = String(e.message || '');
+    if (code === 'SESION_INVALIDA' && RF.auth && RF.auth.esGoogle && RF.auth.esGoogle()) return true;
     var transientServer = e.server && (/^(OCUPADO|TIMEOUT|RESPUESTA_INVALIDA)$/.test(code) || /^HTTP 5\d\d$/.test(code));
     if (e.server && !transientServer) return false;
     return !!(root.navigator && root.navigator.onLine === false) || /^(TIMEOUT|RESPUESTA_INVALIDA)$/.test(code || message) || /Failed to fetch|NetworkError|Load failed|HTTP 5\d\d|fetch/i.test(message);
   }
-  function outKey(p) { return [p.project, p.category, p.subfolder || '', p.fileName, p.issueDate || '', (p.base64 || '').length].join('|'); }
+  function outKey(p) { return [p.project, p.category, p.subfolder || '', p.fileName, p.issueDate || '', p.replaceProjectExpenses ? 'consolidado' : (p.base64 || '').length].join('|'); }
   function send(payload, label, quiet, meta) {
     return RF.cloud.post('saveFile', payload, 90000).then(function (r) {
       if (!r || !r.ok) { var er = new Error(errText(r && r.error)); er.server = true; er.code = r && r.error; throw er; }
@@ -73,6 +109,7 @@
   }
   function flushOutbox() {
     if (flushing) return flushing;
+    if (syncing) return syncing.then(function () { return flushOutbox(); });
     if (!enabled()) return Promise.resolve({ ok: false, sent: 0, left: null, error: 'NO_CONFIGURADO' });
     if (!RF.auth || RF.auth.phase() !== 'open') return Promise.resolve({ ok: false, sent: 0, left: null, error: 'SESION_CERRADA' });
     if (root.navigator && root.navigator.onLine === false) return Promise.resolve({ ok: false, sent: 0, left: null, error: 'SIN_CONEXION' });
@@ -87,25 +124,30 @@
             var destination = String(o.meta && o.meta.serviceUrl || '').trim().replace(/\/+$/, '');
             if (!destination) return RF.outbox.bump(rec, 'ORIGEN_NO_VERIFICADO', true);
             if (destination !== serviceKey()) return RF.outbox.bump(rec, 'SERVICIO_CAMBIO', true);
-            var payload = action === 'saveState' ? { state: RF.store.exportJSON(), baseRev: cfg().rev || 0, force: false } : o.payload;
+            var foto = action === 'saveState' ? snapshotNow() : null;
+            var payload = action === 'saveState' ? { state: RF.store.exportJSON(), baseRev: o.payload.baseRev, force: false } : o.payload;
+            if (o.meta && o.meta.kind === 'gastos') {
+              var project = RF.store.get().projects.filter(function (p) { return p.id === o.meta.projectId; })[0];
+              if (!project) return RF.outbox.bump(rec, 'PROYECTO_NO_EXISTE', true);
+              payload = gastosPayload(project, formatFor({ sgp: true }, 'rendicion-gastos'));
+            }
             return RF.cloud.post(action, payload, action === 'saveState' ? 60000 : 90000).then(function (r) {
               if (r && r.ok) {
-                if (action === 'saveState') applyStateResult(r);
+                if (action === 'saveState') { applyStateResult(r); confirmarEnvio(foto); }
                 else { remember({ at: new Date().toISOString(), name: r.fileName || payload.fileName, where: r.where, url: r.url, folderUrl: r.folderUrl, idempotent: !!r.idempotent }); applyMeta(o.meta, r); }
                 return RF.outbox.del(rec.id).then(function () { sent++; });
               }
               var responseError = { server: true, code: r && r.error, message: errText(r && r.error) };
               var code = errorCode(responseError);
-              if (action === 'saveState' && r && r.error === 'CONFLICTO') RF.store.update(function (s) { s.cloud.conflict = true; }, { silent: true });
+              if (action === 'saveState' && r && r.error === 'CONFLICTO') conflictNotice();
               if (retryable(responseError)) {
-                var nextTry = (rec.tries || 0) + 1;
-                return RF.outbox.bump(rec, code, nextTry >= 5).then(function () { stop = true; });
+                return RF.outbox.bump(rec, code, false).then(function () { stop = true; });
               }
               return RF.outbox.bump(rec, code, true).then(function () { if (r && r.error === 'SESION_INVALIDA') stop = true; });
             }, function (e) {
-              var nextTry = (rec.tries || 0) + 1;
+              if (errorCode(e) === 'SESION_INVALIDA' && RF.auth.esGoogle && RF.auth.esGoogle()) { stop = true; return null; }
               if (!retryable(e)) return RF.outbox.bump(rec, errorCode(e), true);
-              return RF.outbox.bump(rec, errorCode(e), nextTry >= 5).then(function () { stop = true; });
+              return RF.outbox.bump(rec, errorCode(e), false).then(function () { stop = true; });
             });
           }).catch(function (e) {
             /* A failure to decrypt/read/reconcile the queue is not an empty queue or a successful upload. */
@@ -135,16 +177,22 @@
   }
   startOutbox();
 
-  /* Guarda un documento armado por la app (Gantt, anexos, rendición…) en la carpeta del proyecto. kind: xlsx | doc | txt */
+  /* Guarda con el formato del tipo; kind solo es el formato anterior de los demás documentos. */
   function hash32(str) { var h = 2166136261; for (var i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(16); }
   function saveDoc(doc, base, kind) {
     if (!enabled()) return Promise.reject(new Error('NO_CONFIGURADO'));
+    kind = formatFor(doc, base, kind);
+    if (documentType(doc, base) === 'gastos') {
+      return saveGastos(RF.store.project(), false);
+    }
     var payload = { project: projectName(), category: categoryFor(base) }, E = RF.exp;
-    if (kind === 'doc') { payload.mimeType = 'application/msword'; payload.fileName = E.fileName(base || doc.title, 'doc'); payload.base64 = textToB64('﻿' + E.docToWord(doc)); }
+    if (kind === 'docx') { payload.mimeType = E.DOCX_MIME; payload.fileName = E.fileName(base || doc.title, 'docx'); payload.base64 = bytesToB64(E.docToDocx(doc)); }
+    else if (kind === 'pdf') { payload.mimeType = 'application/pdf'; payload.fileName = E.fileName(base || doc.title, 'pdf'); payload.pdfFromHtml = true; payload.base64 = textToB64(E.docToHtml(doc)); }
+    else if (kind === 'doc') { payload.mimeType = 'application/msword'; payload.fileName = E.fileName(base || doc.title, 'doc'); payload.base64 = textToB64('﻿' + E.docToWord(doc)); }
     else if (kind === 'txt') { payload.mimeType = 'text/plain'; payload.fileName = E.fileName(base || doc.title, 'txt'); payload.base64 = textToB64('﻿' + E.docToText(doc)); }
     else { payload.mimeType = XLSX; payload.fileName = E.fileName(base || doc.title, 'xlsx'); payload.base64 = bytesToB64(E.buildXlsx(E.docToSheets(doc))); }
     /* una sola copia por documento y solo si cambió: sacar el mismo documento en Excel y en Word no llena el Drive de repetidos */
-    var fp = payload.category + '|' + payload.fileName + '|' + payload.base64.length + '|' + hash32(payload.base64);
+    var fp = serviceKey() + '|' + payload.project + '|' + payload.category + '|' + payload.fileName + '|' + payload.base64.length + '|' + hash32(payload.base64);
     var seen = (cfg().docHashes || {});
     if (seen[payload.fileName] === fp) return Promise.resolve({ ok: true, remote: true, queued: false, unchanged: true });
     return send(payload).then(function (r) { if (r && r.remote) RF.store.update(function (st) { st.cloud.docHashes = Object.assign({}, st.cloud.docHashes || {}); st.cloud.docHashes[payload.fileName] = fp; }, { silent: true }); return r; });
@@ -196,7 +244,7 @@
     out.push('', '7. REVISIÓN', '   La persona comparó cada dato con el documento original: ' + (e.verified ? 'SÍ' : 'NO todavía'));
     if (r) { out.push('   Estado según las reglas de la app: ' + (r.status === 'ok' ? 'sin problemas' : r.status === 'warn' ? 'con avisos' : 'con errores')); (r.issues || []).forEach(function (i) { out.push('   - ' + (i.level === 'error' ? 'ERROR: ' : 'Aviso: ') + i.msg); }); }
     if (e.ocr) {
-      out.push('', '8. LECTURA AUTOMÁTICA', '   Motor: Google Cloud Vision · ' + (e.ocr.at ? new Date(e.ocr.at).toLocaleString('es-CL') : '') + (e.ocr.confidence != null ? ' · confianza ' + Math.round(e.ocr.confidence * 100) + ' %' : ''));
+      out.push('', '8. LECTURA AUTOMÁTICA', '   Motor: Google Drive · ' + (e.ocr.at ? new Date(e.ocr.at).toLocaleString('es-CL') : '') + (e.ocr.confidence != null ? ' · confianza ' + Math.round(e.ocr.confidence * 100) + ' %' : ''));
       var diffs = [];
       Object.keys(FIELD_LABELS).forEach(function (k) {
         var was = e.ocr.auto && e.ocr.auto[k] != null ? String(e.ocr.auto[k]) : '', now = e[k] == null ? '' : String(e[k]);
@@ -210,8 +258,7 @@
   function baseName(e) { return String(e.proveedor || 'comprobante').replace(/[^A-Za-z0-9ÁÉÍÓÚÑáéíóúñ]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 50) + '-' + (String(e.folio || 'sn').replace(/[^A-Za-z0-9]+/g, '')); }
   function saveFicha(e, project, community, quiet) {
     if (!enabled()) return Promise.reject(new Error('NO_CONFIGURADO'));
-    if (!e.fecha) { RF.ui.toast('Primero anota la fecha del documento: se usa para la carpeta del mes.', 'bad'); return Promise.reject(new Error('SIN_FECHA')); }
-    return send({ project: (project && project.name) || projectName(), category: 'comprobante', fileName: baseName(e) + '.datos.txt', mimeType: 'text/plain', base64: textToB64('﻿' + fichaText(e, project, community)), issueDate: e.fecha }, 'ficha del gasto', quiet, { expId: e.id, kind: 'ficha' })
+    return saveGastos(project, quiet, e.id)
       .then(function (r) { if (!r.remote) return r; e.driveFichaAt = new Date().toISOString(); e.driveFichaUrl = r.url || ''; RF.store.update(function () { }, { silent: true }); return r; });
   }
   /* foto de lo que se envía (base y huella), tomada en el mismo instante en que se serializa la copia */
@@ -221,7 +268,7 @@
   function pushState(force, marcar) {
     var rev = cfg().rev || 0;
     var state = RF.store.exportJSON(), foto = marcar ? snapshotNow() : null;
-    var payload = { state: state, baseRev: rev, force: !!force };
+    var payload = { state: state, baseRev: rev, force: false };
     function queueSnapshot() {
       return RF.outbox.add('saveState', 'copia de seguridad', payload, { action: 'saveState', coalesce: true, serviceUrl: serviceKey() }).then(function (id) {
         return { ok: false, remote: false, queued: true, outboxId: id };
@@ -229,10 +276,11 @@
     }
     function handle(r) {
       if (r && r.ok) { applyStateResult(r); if (marcar) confirmarEnvio(foto); return { ok: true, remote: true, queued: false, rev: r.rev }; }
-      if (r && r.error === 'CONFLICTO') { RF.store.update(function (s) { s.cloud.conflict = true; }, { silent: true }); return { ok: false, remote: false, conflict: true, rev: r.rev }; }
+      if (r && r.error === 'CONFLICTO') { conflictNotice(); return { ok: false, remote: false, conflict: true, rev: r.rev }; }
       if (retryable({ server: true, code: r && r.error, message: r && r.error })) return queueSnapshot();
       return { ok: false, remote: false, error: r && r.error };
     }
+    if (root.navigator && root.navigator.onLine === false) return queueSnapshot();
     return RF.cloud.post('saveState', payload, 60000).then(handle, function (e) { return retryable(e) ? queueSnapshot() : Promise.reject(e); });
   }
   function pullState() {
@@ -246,9 +294,8 @@
     return pullState().then(function (p) {
       if (!p.ok) return { ok: false, text: p.error === 'SIN_COPIA' ? 'Todavía no hay una copia en la nube.' : 'No se pudo leer la copia (' + p.error + ').' };
       var msg = (opts && opts.pullOnly ? 'Hay una copia en la nube. ' : 'Otro equipo guardó una copia más nueva. ') + '¿Qué hacemos?';
-      return RF.ui.choiceBox(msg, [{ id: 'merge', label: 'Combinar registros nuevos; si hay cambios incompatibles, se detiene para revisarlos', primary: true }, { id: 'replace', label: 'Usar la de la nube y descartar lo de este equipo' }].concat((opts && opts.pullOnly) || (RF.auth && RF.auth.esAsistida && RF.auth.esAsistida()) ? [] : [{ id: 'overwrite', label: 'Guardar lo de este equipo encima de la nube' }])).then(function (c) {
+      return RF.ui.choiceBox(msg, [{ id: 'merge', label: 'Combinar registros nuevos; si hay cambios incompatibles, se detiene para revisarlos', primary: true }, { id: 'replace', label: 'Usar la de la nube y descartar lo de este equipo' }]).then(function (c) {
         if (!c) return { ok: false, text: 'No se hizo ningún cambio.' };
-        if (c === 'overwrite') return pushState(true, true).then(function (r) { return { ok: r.ok, text: r.ok ? 'La nube quedó con lo de este equipo.' : 'No se pudo guardar.' }; });
         if (c === 'replace') { RF.store.importJSON(JSON.stringify(p.remote)); RF.store.update(function (s) { s.cloud.rev = p.rev; s.cloud.conflict = false; }, { silent: true, noSync: true }); markSynced(); return { ok: true, text: 'Se cargó la copia de la nube.' }; }
         var added;
         try { added = RF.store.mergeRemote(p.remote, cfg().base); } catch (e) { if (e.code !== 'MERGE_CONFLICT') throw e; return { ok: false, conflict: true, text: e.message }; }
@@ -271,6 +318,12 @@
      Se hace al abrir la sesión, al volver a la pestaña, cada pocos minutos y unos segundos después de cualquier cambio. */
   function syncFingerprint() { var st = RF.store.get(); return RF.store.fingerprint({ community: st.community, holidays: st.holidays, events: st.events, activity: st.activity, signatures: st.signatures, repo: st.repo, projects: st.projects, peaRespaldos: st.peaRespaldos }); }
   function isDirty() { return cfg().syncFp !== syncFingerprint(); }
+  function conflictNotice() {
+    var text = 'El servicio tiene una copia más nueva. Hay un conflicto: se conservan los cambios de este equipo sin sobrescribir el servicio. Revisa Nube y copias.';
+    RF.store.update(function (s) { s.cloud.conflict = true; s.cloud.conflictText = text; }, { silent: true, noSync: true });
+    RF.ui.toast(text, 'warn');
+    return { ok: false, conflict: true, text: text };
+  }
   /* sin foto, la base es la de lo que hay ahora (replace de la nube, sin nada pendiente de enviar) */
   function markSynced(foto) {
     var base = foto ? foto.base : RF.store.snapshotBase(RF.store.get()), fp = foto ? foto.fp : syncFingerprint();
@@ -287,12 +340,16 @@
   function typing() { var a = root.document && root.document.activeElement; return !!(a && /^(input|textarea|select)$/i.test(a.tagName) && a.type !== 'checkbox' && a.type !== 'radio'); }
   function syncNow(opts) {
     if (!auto() || !RF.auth || RF.auth.phase() !== 'open') return Promise.resolve({ ok: false, skipped: true });
-    if (root.navigator && root.navigator.onLine === false) return Promise.resolve({ ok: false, skipped: true });
+    if (root.navigator && root.navigator.onLine === false) return isDirty() ? pushState(false, true) : Promise.resolve({ ok: true, same: true });
     if (syncing) return syncing;
+    if (flushing) return flushing.then(function () { return syncNow(opts); });
     if (typing() && !(opts && opts.force)) { scheduleSync(4000); return Promise.resolve({ ok: false, skipped: true, typing: true }); }
     lastSyncAt = Date.now();
     var out;
-    syncing = pullState().then(function (p) {
+    var queued = root.indexedDB ? flushOutbox() : Promise.resolve();
+    syncing = queued.then(function () {
+      return cfg().conflict && isDirty() ? { ok: false, conflict: true } : pullState();
+    }).then(function (p) {
       if (RF.auth.phase() !== 'open') return { ok: false, skipped: true }; /* se cerró la sesión mientras se consultaba */
       if (!p.ok) {
         if (p.error === 'SIN_COPIA') return pushState(false, true);
@@ -303,6 +360,7 @@
         if (!isDirty()) { if (!cfg().base) markSynced(); return { ok: true, same: true }; }
         return pushState(false, true);
       }
+      if (isDirty()) return conflictNotice();
       var added;
       try { added = RF.store.mergeRemote(p.remote, cfg().base); }
       catch (e) {
@@ -409,7 +467,7 @@
   var SAVE_LISTENERS = [];
   function onSaveAll(fn) { SAVE_LISTENERS.push(fn); }
 
-  /* foto (si hay) + ficha con los datos + copia de seguridad */
+  /* foto (si hay) + consolidado del proyecto + copia de seguridad */
   function archiveExpense(e, project, community) {
     function settle(p) { return Promise.resolve(p).then(function (r) { return r; }, function (e) { return { ok: false, remote: false, queued: false, error: errorCode(e) }; }); }
     var receipt = e.imgId && !e.driveId ? saveReceipt(e, project, true) : Promise.resolve({ ok: true, remote: true, skipped: true });
@@ -423,9 +481,9 @@
         var remote = parts.filter(function (x) { return x.remote; }).length;
         var status = remote === parts.length ? 'saved' : queued === parts.length ? 'queued' : 'partial';
         if (!parts.length) status = 'partial';
-        var documentsLabel = result.receipt.skipped ? 'La ficha del gasto y la copia' : 'La foto del comprobante, su ficha y la copia';
+        var documentsLabel = result.receipt.skipped ? 'Los gastos del proyecto y la copia' : 'La foto del comprobante, los gastos del proyecto y la copia';
         if (RF.activity && status !== 'partial') RF.activity.log('drive', (status === 'saved' ? 'Guardó en Drive' : 'Dejó pendiente de enviar a Drive') + ' el gasto «' + (e.proveedor || 'sin proveedor') + (e.folio ? ' N° ' + e.folio : '') + '».', 'gastos');
-        if (status === 'saved') RF.ui.toast(documentsLabel + ' quedaron guardadas en Drive.', 'ok', { href: (result.receipt && result.receipt.folderUrl) || (result.ficha && result.ficha.folderUrl) || (result.backup && result.backup.folderUrl) });
+        if (status === 'saved') RF.ui.toast(documentsLabel + ' quedaron guardados en Drive.', 'ok', { href: (result.receipt && result.receipt.folderUrl) || (result.ficha && result.ficha.folderUrl) || (result.backup && result.backup.folderUrl) });
         else if (status === 'queued') RF.ui.toast(documentsLabel + ' quedaron pendientes en este dispositivo; todavía no están en Drive.', 'warn');
         else RF.ui.toast('Guardado parcial: algunas partes están en Drive y otras siguen pendientes o requieren atención. Revisa la cola antes de darlo por terminado.', 'warn');
         return { ok: status === 'saved', remote: status === 'saved', queued: queued > 0, queuedParts: queued, status: status, parts: result };
@@ -550,5 +608,5 @@
     });
   }
 
-  RF.drive = { saveAttachment: saveAttachment, describeSave: describeSave, friendlySaves: friendlySaves, flushOutbox: flushOutbox, enabled: enabled, auto: auto, saveDoc: saveDoc, saveReceipt: saveReceipt, saveFicha: saveFicha, archiveExpense: archiveExpense, fichaText: fichaText, backupState: backupState, syncNow: syncNow, onSync: onSync, saveF29: saveF29, saveObra: saveObra, saveSigned: saveSigned, pendingItems: pendingItems, pendingCount: pendingCount, saveAll: saveAll, onSaveAll: onSaveAll, markSynced: markSynced, pushState: pushState, pullState: pullState, resolveConflict: resolveConflict, saveExternal: saveExternal, saveActa: saveActa, docMeta: docMeta, actaMeta: actaMeta, setup: setup, categoryFor: categoryFor, errText: errText };
+  RF.drive = { documentType: documentType, formatFor: formatFor, setFormat: setFormat, saveAttachment: saveAttachment, describeSave: describeSave, friendlySaves: friendlySaves, flushOutbox: flushOutbox, enabled: enabled, auto: auto, saveDoc: saveDoc, saveReceipt: saveReceipt, saveFicha: saveFicha, archiveExpense: archiveExpense, fichaText: fichaText, backupState: backupState, syncNow: syncNow, onSync: onSync, saveF29: saveF29, saveObra: saveObra, saveSigned: saveSigned, pendingItems: pendingItems, pendingCount: pendingCount, saveAll: saveAll, onSaveAll: onSaveAll, markSynced: markSynced, pushState: pushState, pullState: pullState, resolveConflict: resolveConflict, saveExternal: saveExternal, saveActa: saveActa, docMeta: docMeta, actaMeta: actaMeta, setup: setup, categoryFor: categoryFor, errText: errText };
 })(typeof window !== 'undefined' ? window : globalThis);

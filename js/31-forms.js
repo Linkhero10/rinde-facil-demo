@@ -61,7 +61,7 @@
   }
   /* ============ ANEXO 1 ============ */
   SCHEMAS.anexo1 = {
-    id: 'anexo1', title: 'Anexo 1 · Declaración por no utilización de IVA CF', repeat: false, sheet: 'Anexo 1', signers: [{ k: 'rep', l: 'Firma de quien representa a la comunidad' }], anexoN: 1,
+    id: 'anexo1', title: 'ANEXO N° 1 POR NO UTILIZACIÓN DE IVA CF', repeat: false, sheet: 'Anexo 1', signers: [{ k: 'rep', l: 'Firma de quien representa a la comunidad' }], anexoN: 1,
     defaults: function (ctx) { return { ciudad: '', fecha: U.todayISO(), repNombre: v(com(ctx).legalRep), repRut: v(com(ctx).repRut), comunidad: v(com(ctx).name), comunidadRut: v(com(ctx).rut), proyectoNombre: v(proj(ctx).name), proyectoCodigo: v(proj(ctx).code), periodoInicio: v(proj(ctx).periodoInicio), periodoFin: v(proj(ctx).periodoFin) }; },
     fields: [
       { k: 'comunidad', l: 'Comunidad que declara', t: 'choice', options: commNames }, { k: 'comunidadRut', l: 'RUT de la comunidad', t: 'rut' },
@@ -86,7 +86,7 @@
 
   /* ============ ANEXO 2 ============ */
   SCHEMAS.anexo2 = {
-    id: 'anexo2', title: 'Anexo 2 · IVA CF no relacionado con los proyectos', repeat: false, sheet: 'Anexo 2', signers: [{ k: 'rep', l: 'Firma de quien representa a la comunidad' }], anexoN: 2,
+    id: 'anexo2', title: 'ANEXO N° 2 UTILIZACIÓN DE IVA CF NO RELACIONADO CON LOS PROYECTOS', repeat: false, sheet: 'Anexo 2', signers: [{ k: 'rep', l: 'Firma de quien representa a la comunidad' }], anexoN: 2,
     defaults: function (ctx) { return { ciudad: '', fecha: U.todayISO(), repNombre: v(com(ctx).legalRep), repCargo: '', proyectoNombre: v(proj(ctx).name), proyectoCodigo: v(proj(ctx).code), periodoInicio: v(proj(ctx).periodoInicio), periodoFin: v(proj(ctx).periodoFin), filas: [] }; },
     fields: [
       { k: 'repNombre', l: 'Quién representa a la comunidad y firma', t: 'choice', options: repNames }, { k: 'repCargo', l: 'Su cargo o relación con la comunidad', t: 'choice', options: CARGOS },
@@ -114,27 +114,27 @@
 
   /* ============ ANEXO 3 (uno por pago en efectivo) ============ */
   SCHEMAS.anexo3 = {
-    id: 'anexo3', title: 'Anexo 3 · Declaración jurada simple (pago en efectivo)', repeat: true, sheet: 'Anexo 3', signers: [{ k: 'prov', l: 'Firma de quien recibió el pago' }], anexoN: 3, addLabel: 'Nueva declaración', itemName: function (d) { return (d.proveedorNombre || 'Sin nombre') + (d.monto ? ' · ' + U.fmtCLP(d.monto) : ''); },
-    defaults: function (ctx) { return { ciudad: '', fecha: U.todayISO(), proveedorNombre: '', proveedorRut: '', monto: '', repNombre: v(com(ctx).legalRep), documentos: '', gastoId: '' }; },
+    id: 'anexo3', title: 'ANEXO N° 3 DECLARACIÓN JURADA SIMPLE', repeat: true, sheet: 'Anexo 3', signers: [{ k: 'prov', l: 'Firma de quien recibió el pago' }], anexoN: 3, addLabel: 'Nueva declaración', itemName: function (d) { return (d.proveedorNombre || 'Sin nombre') + (d.monto ? ' · ' + U.fmtCLP(d.monto) : ''); },
+    defaults: function (ctx) { return { ciudad: '', fecha: U.todayISO(), proveedorNombre: '', monto: '', repNombre: v(com(ctx).legalRep), documentos: '', gastoId: '' }; },
     fields: [
       { k: 'gastoId', l: 'Gasto en efectivo al que corresponde (opcional)', t: 'expenseSelect', filter: function (e) { return e.formaPago === 'efectivo'; } },
       { k: 'ciudad', l: 'Ciudad donde se firma', t: 'text' }, { k: 'fecha', l: 'Fecha del pago', t: 'date' },
-      { k: 'proveedorNombre', l: 'Quien recibió el pago (nombre completo)', t: 'text' }, { k: 'proveedorRut', l: 'RUT o cédula de quien recibió', t: 'rut' },
+      { k: 'proveedorNombre', l: 'Quien recibió el pago (nombre completo)', t: 'text' },
       { k: 'monto', l: 'Monto pagado en efectivo ($)', t: 'money' }, { k: 'repNombre', l: 'Quién pagó, por la comunidad', t: 'choice', options: repNames },
       { k: 'documentos', l: 'Documento que se pagó (N° de factura, boleta u otro)', t: 'text', ph: 'Ej: boleta N° 542449' }
     ],
     onChange: function (k, d, ctx) {
       if (k !== 'gastoId' || !d.gastoId) return;
       var e = (ctx.project.expenses || []).filter(function (x) { return x.id === d.gastoId; })[0]; if (!e) return;
-      d.proveedorNombre = e.proveedor || d.proveedorNombre; d.proveedorRut = e.rutProveedor || d.proveedorRut; d.monto = num(e.total) || d.monto;
+      d.proveedorNombre = e.proveedor || d.proveedorNombre; d.monto = num(e.total) || d.monto;
       d.documentos = ((RF.data.DOC_BY_ID[e.docType] || {}).name || 'documento') + ' N° ' + (e.folio || '');
       if (e.fechaPago || e.fecha) d.fecha = e.fechaPago || e.fecha; /* la declaración lleva la fecha en que se pagó */
     },
-    check: function (d) { var o = []; if (!(num(d.monto) > 0)) o.push({ level: 'error', msg: 'Falta el monto.' }); if (!d.proveedorNombre) o.push({ level: 'error', msg: 'Falta el nombre de quien recibió.' }); return o.concat(rutError(d.proveedorRut, 'de quien recibió el pago')); },
+    check: function (d) { var o = []; if (!(num(d.monto) > 0)) o.push({ level: 'error', msg: 'Falta el monto.' }); if (!d.proveedorNombre) o.push({ level: 'error', msg: 'Falta el nombre de quien recibió.' }); return o; },
     doc: function (d) {
       return { title: 'Declaración jurada simple', sheet: 'Anexo 3', footer: foot('el Anexo N° 3'), blocks: [
         { t: 'p', text: v(d.ciudad, '[Ciudad]') + ', ' + (d.fecha ? U.fmtDate(d.fecha) : '[fecha]') },
-        { t: 'p', text: 'Yo ' + v(d.proveedorNombre, '[nombre del prestador del servicio/proveedor]') + (d.proveedorRut ? ', RUT ' + d.proveedorRut : '') + ', declaro que he recibido el pago en efectivo de ' + (num(d.monto) ? U.fmtCLP(d.monto) : '[$ monto]') + ', de parte de ' + v(d.repNombre, '[nombre del representante de la Comunidad]') + ', por la(s) ' + v(d.documentos, '[N° de facturas, N° de boleta de honorarios u otro documento]') + ', sin que exista monto adeudado por estos conceptos a esta fecha.' },
+        { t: 'p', text: 'Yo ' + v(d.proveedorNombre, '[nombre del prestador del servicio/proveedor]') + ', declaro que he recibido el pago en efectivo de ' + (num(d.monto) ? U.fmtCLP(d.monto) : '[$ monto]') + ', de parte de ' + v(d.repNombre, '[nombre del representante de la Comunidad]') + ', por la(s) ' + v(d.documentos, '[N° de facturas, N° de boleta de honorarios u otro documento]') + ', sin que exista monto adeudado por estos conceptos a esta fecha.' },
         { t: 'sign', labels: ['Firma · ' + v(d.proveedorNombre, 'Nombre del prestador del servicio/proveedor')] }
       ] };
     }
@@ -170,7 +170,7 @@
 
   /* ============ ANEXO 4 (uno por viajero) ============ */
   SCHEMAS.anexo4 = {
-    id: 'anexo4', title: 'Anexo 4 · Certificado de viático', repeat: true, sheet: 'Anexo 4', signers: [{ k: 'viajero', l: 'Firma de quien viaja' }, { k: 'rep', l: 'Firma de quien representa a la comunidad' }], anexoN: 4, addLabel: 'Nuevo certificado', itemName: function (d) { return (d.viajero || 'Falta el nombre') + (d.total ? ' · ' + U.fmtCLP(d.total) : ''); },
+    id: 'anexo4', title: 'ANEXO N° 4 CERTIFICADO DE VIÁTICO', repeat: true, sheet: 'Anexo 4', signers: [{ k: 'viajero', l: 'Firma de quien viaja' }, { k: 'rep', l: 'Firma de quien representa a la comunidad' }], anexoN: 4, addLabel: 'Nuevo certificado', itemName: function (d) { return (d.viajero || 'Falta el nombre') + (d.total ? ' · ' + U.fmtCLP(d.total) : ''); },
     defaults: function (ctx) { return { viajero: '', comunidad: v(com(ctx).name), proyectoCodigo: v(proj(ctx).code), proyectoNombre: v(proj(ctx).name), ciudad: '', fecha: U.todayISO(), repNombre: v(com(ctx).legalRep), medioPago: 'transferencia', fechaPago: '', filas: [{}], total: 0 }; },
     autoCols: ['dias', 'desde', 'hasta'],
     fields: [
@@ -230,7 +230,7 @@
   }
   var CONCEPTO_GUESS = [[/luz|electric/i, 'Luz'], [/agua/i, 'Agua'], [/internet|wifi|fibra/i, 'Internet'], [/telef|celular|movil/i, 'Teléfono'], [/\bgas\b/i, 'Gas'], [/arriendo|alquiler/i, 'Arriendo'], [/conta/i, 'Contador'], [/secretar/i, 'Secretaria']];
   SCHEMAS.anexo5 = {
-    id: 'anexo5', title: 'Anexo 5 · Memoria de cálculo de gastos de administración', repeat: false, sheet: 'Anexo 5',
+    id: 'anexo5', title: 'ANEXO N° 5 MEMORIA DE CÁLCULO GASTOS DE ADMINISTRACIÓN', repeat: false, sheet: 'Anexo 5',
     defaults: function (ctx) { return { proyectoNombre: v(proj(ctx).name), comunidadNombre: v(com(ctx).name), uso: [{}], hh: [], totalUso: 0, totalHH: 0 }; },
     autoCols: ['concepto', 'periodo', 'doc', 'monto', 'pct'],
     fields: [
@@ -295,7 +295,7 @@
     });
   }
   SCHEMAS.informe = {
-    id: 'informe', title: 'Anexo 6 · Informe de seguimiento técnico', repeat: false, sheet: 'Informe técnico',
+    id: 'informe', title: 'ANEXO N° 6 INFORME TÉCNICO', repeat: false, sheet: 'Informe técnico',
     defaults: function (ctx) { return { proyectoNombre: v(proj(ctx).name), nInforme: '', comunidad: v(com(ctx).name), proyectoCodigo: v(proj(ctx).code), fechaInforme: U.todayISO(), elaboradoPor: '', fechaInicio: v(proj(ctx).start), fechaTermino: v(proj(ctx).end), fechaTransferencia: v(proj(ctx).desembolso1), periodoInicio: v(proj(ctx).periodoInicio), periodoFin: v(proj(ctx).periodoFin), responsableCorreo: '', responsableTel: '', comunidadRut: v(com(ctx).rut), direccion: v(com(ctx).address), repLegal: v(com(ctx).legalRep), repCorreo: v(com(ctx).email), repTel: v(com(ctx).phone), oc: v(com(ctx).oc, 'Organismo Colaborador'), objetivoGeneral: '', objetivosEspecificos: '', resumen: '' }; },
     fields: [
       { t: 'heading', l: 'Portada del informe' },
@@ -349,6 +349,22 @@
     });
     return out;
   }
+  function avanceFichas(project) {
+    var out = [];
+    ['informeA', 'informeB', 'informeC', 'informeD', 'informeE'].forEach(function (kind) {
+      (project.forms && Array.isArray(project.forms[kind]) ? project.forms[kind] : []).forEach(function (it) {
+        var d = it.data || {}, items = [];
+        [['avanceProgAcum', 'Programado', '#9277b0'], ['avanceRealAcum', 'Real', '#51247a']].forEach(function (field) {
+          var v = d[field[0]];
+          if (v == null || v === '' || !Number.isFinite(Number(v)) || Number(v) < 0 || Number(v) > 100) return;
+          items.push({ label: field[1], value: Number(v), max: 100, text: v + ' %', color: field[2] });
+        });
+        if (items.length) out.push({ t: 'chart', kind: 'hbar', unit: 'pct', title: 'Avance · Ficha ' + kind.slice(-1) + ' · ' + (d.nombre || 'Sin nombre'), items: items,
+          note: kind === 'informeD' ? 'Programado por meses; real según monto rendido. No equivale a avance físico.' : 'Porcentajes acumulados registrados en la ficha; revisar su criterio de medición.' });
+      });
+    });
+    return out;
+  }
   function informeDoc(d, ctx, soloFicha) {
     var blocks = [];
     blocks.push({ t: 'kv', rows: [['Proyecto', d.proyectoNombre], ['Informe técnico N°', d.nInforme], ['Comunidad', d.comunidad], ['Código del proyecto', d.proyectoCodigo], ['Fecha del informe', d.fechaInforme ? U.fmtDate(d.fechaInforme) : ''], ['Elaborado por', d.elaboradoPor], ['Fecha de inicio del proyecto', d.fechaInicio ? U.fmtDate(d.fechaInicio) : ''], ['Fecha estimada de término', d.fechaTermino ? U.fmtDate(d.fechaTermino) : ''], ['Fecha de transferencia de recursos del hito reportado', d.fechaTransferencia ? U.fmtDate(d.fechaTransferencia) : '']] });
@@ -359,9 +375,10 @@
     blocks.push({ t: 'h', text: 'III. Detalle de actividades informadas' });
     blocks.push({ t: 'kv', rows: [['Resumen de actividades del período', d.resumen], ['Descripción resumida de avances acumulados', v(d.descripcion)], ['Principales actividades o logros del período rendido', v(d.principales)], ['Razones de las desviaciones', v(d.desviaciones)], ['Riesgos o problemas', v(d.riesgos)]] });
     var p = ctx.project;
+    avanceFichas(p).forEach(function (b) { blocks.push(b); });
     ['informeA', 'informeB', 'informeC', 'informeD', 'informeE'].forEach(function (k) { fichaBlocks(k, (p.forms && Array.isArray(p.forms[k]) ? p.forms[k] : [])).forEach(function (b) { blocks.push(b); }); });
     blocks.push({ t: 'note', text: 'Recuerda adjuntar: lista de asistentes firmada (o pantallazo si fue en línea), registro fotográfico (Anexo B del Manual), informes de estudios y permisos de obras, según corresponda.' });
-    return { title: 'Informe de seguimiento técnico de avance de ejecución de actividades', subtitle: v(d.proyectoNombre), sheet: 'Informe técnico', footer: foot('el Anexo N° 6'), blocks: blocks };
+    return { title: 'ANEXO N° 6 INFORME TÉCNICO', subtitle: v(d.proyectoNombre), sheet: 'Informe técnico', footer: foot('el Anexo N° 6'), blocks: blocks };
   }
 
   function fichaSchema(id, title, kind, fields, defaults, nameFn) {
@@ -521,14 +538,26 @@
     }
   };
   SCHEMAS.solicitud = {
-    id: 'solicitud', title: 'Solicitud de aportes restantes del AIA', repeat: false, sheet: 'Solicitud',
-    defaults: function (ctx) { return { fecha: U.todayISO(), destinatario: 'Novandino Litio (ex SQM Litio)', cierreRevision: '', comentario: '', firma: v(com(ctx).legalRep) }; },
+    id: 'solicitud', title: 'Solicitud de aportes mediante el PEA', repeat: false, sheet: 'Solicitud',
+    defaults: function (ctx) { return { fecha: U.todayISO(), destinatario: 'Novandino Litio (ex SQM Litio)', cierreRevision: '', destino: '', rendicionesAlDia: '', comentario: '', firma: v(com(ctx).legalRep) }; },
     fields: [
-      { k: 'destinatario', l: 'A quién va dirigida', t: 'text' }, { k: 'cierreRevision', l: 'Fecha en que CORFO finalizó la revisión de tu rendición', t: 'date' },
+      { k: 'destinatario', l: 'A quién va dirigida', t: 'text' },
+      { k: 'destino', l: 'Destino de los aportes que solicitas mediante el PEA', t: 'select', noEmpty: false, options: [{ id: 'proyectos', name: 'Nuevos proyectos o nuevas actividades del mismo proyecto' }, { id: 'administracion', name: 'Gastos administrativos' }, { id: 'renta_fija', name: 'Inversión en un instrumento de renta fija' }] },
+      { k: 'rendicionesAlDia', l: '¿Confirmaste que las rendiciones exigibles están aprobadas por CORFO y al día según el convenio vigente?', t: 'select', noEmpty: false, options: [{ id: 'si', name: 'Sí, lo confirmé' }, { id: 'no', name: 'No, falta confirmar o regularizar' }], hint: 'Revisa las aprobaciones y los períodos exigibles según el convenio vigente. Una fecha de cierre anterior no basta.' },
+      { k: 'cierreRevision', l: 'Fecha de cierre de la revisión de CORFO (antecedente, si corresponde)', t: 'date' },
       { k: 'comentario', l: 'Comentario adicional (opcional)', t: 'textarea', rows: 3 }, { k: 'firma', l: 'Quién firma', t: 'text' }
     ],
-    check: function (d, ctx) { var o = []; if (!d.cierreRevision) o.push({ level: 'error', msg: 'Sin la fecha de cierre de la revisión de CORFO no deberías pedir los aportes restantes.' }); return o; },
-    doc: function (d, ctx) { return { title: 'Solicitud de aportes restantes del AIA', sheet: 'Solicitud', footer: 'Borrador generado con Rinde Fácil. No es un formato oficial: confirma el canal y los requisitos con CORFO o con el Organismo Colaborador.', blocks: [{ t: 'p', text: 'Fecha: ' + (d.fecha ? U.fmtDate(d.fecha) : '') }, { t: 'p', text: 'Para: ' + v(d.destinatario) }, { t: 'p', text: 'Por medio de la presente, ' + v(ctx.community.name, '[comunidad]') + (ctx.community.rut ? ' (RUT ' + ctx.community.rut + ')' : '') + ' solicita los aportes restantes del Aporte Inicial Atribuible (AIA)' + (proj(ctx).code ? ' correspondientes al proyecto ' + proj(ctx).code : '') + ', una vez que CORFO ' + (d.cierreRevision ? 'finalizó, con fecha ' + U.fmtDate(d.cierreRevision) + ',' : 'finalice') + ' la revisión de nuestra rendición.' }, d.comentario ? { t: 'p', text: d.comentario } : { t: 'p', text: '' }, { t: 'sign', labels: [v(d.firma, 'Nombre y firma')] }] }; }
+    check: function (d) { var o = []; if (d.rendicionesAlDia !== 'si') o.push({ level: 'error', msg: 'Confirma que las rendiciones exigibles están aprobadas por CORFO y al día según el convenio vigente.' }); if (!SCHEMAS.solicitud.fields[1].options.some(function (x) { return x.id === d.destino; })) o.push({ level: 'error', msg: 'Indica el destino de los aportes que solicitas mediante el PEA.' }); return o; },
+    doc: function (d, ctx) {
+      var destino = SCHEMAS.solicitud.fields[1].options.filter(function (x) { return x.id === d.destino; })[0];
+      return { title: 'Solicitud de aportes mediante el PEA', sheet: 'Solicitud', footer: 'Borrador generado con Rinde Fácil. No sustituye el formulario PEA oficial. Confirma el canal y los antecedentes según el convenio vigente con CORFO o con el Organismo Colaborador.', blocks: [
+        { t: 'p', text: 'Fecha: ' + (d.fecha ? U.fmtDate(d.fecha) : '') }, { t: 'p', text: 'Para: ' + v(d.destinatario) },
+        { t: 'p', text: 'Por medio de la presente, ' + v(ctx.community.name, '[comunidad]') + (ctx.community.rut ? ' (RUT ' + ctx.community.rut + ')' : '') + ' solicita aportes mediante el PEA' + (proj(ctx).code ? ' para el proyecto ' + proj(ctx).code : '') + ', según el convenio vigente.' },
+        { t: 'p', text: 'Destino: ' + (destino ? destino.name : '[indica el destino en el PEA]') + '.' },
+        { t: 'p', text: d.rendicionesAlDia === 'si' ? 'La comunidad declara haber confirmado que las rendiciones exigibles están aprobadas por CORFO y al día según el convenio vigente.' : 'Pendiente de confirmar: rendiciones exigibles aprobadas por CORFO y al día según el convenio vigente.' },
+        d.cierreRevision ? { t: 'p', text: 'Antecedente de cierre de revisión de CORFO: ' + U.fmtDate(d.cierreRevision) + '. Esta fecha no acredita por sí sola estar al día.' } : { t: 'p', text: '' },
+        { t: 'p', text: v(d.comentario) }, { t: 'sign', labels: [v(d.firma, 'Nombre y firma')] }] };
+    }
   };
 
   /* ============ Motor de formularios (interfaz) ============ */
@@ -670,6 +699,7 @@
             if (sc.autoCols && sc.autoCols.indexOf(c.k) >= 0) reg(function () { if (document.activeElement !== inp) inp.value = c.t === 'money' ? (row[c.k] ? U.fmtNum(row[c.k]) : '') : (row[c.k] == null ? '' : row[c.k]); }); /* valor calculado, pero editable */
             if (c.t === 'select') reg(function () { if (inp.value !== String(row[c.k] == null ? '' : row[c.k]) && document.activeElement !== inp) inp.value = row[c.k] == null ? '' : row[c.k]; });
             td.appendChild(inp);
+            if (c.t === 'rut') td.appendChild(h('span', { class: 'hint' }, UI.rutHint()));
             if (f.cols.length >= 6 && c.tip) td.appendChild(UI.tip(c.tip, 'Qué significa ' + c.l));
           }
           tr.appendChild(td);
@@ -845,13 +875,36 @@
     return root;
   }
   function combinedDoc(id, list, ctx) {
-    var sc = SCHEMAS[id], blocks = [];
-    list.forEach(function (it, i) { var d = docOf(id, it.data, ctx); blocks.push({ t: 'h', text: (i + 1) + '. ' + d.title }); d.blocks.forEach(function (b) { blocks.push(b); }); });
-    return { title: sc.title, subtitle: v(ctx.project.name), sheet: sc.sheet, blocks: blocks, footer: 'Generado con Rinde Fácil.' };
+    var sc = SCHEMAS[id], blocks = [], documents = [];
+    list.forEach(function (it, i) { var d = docOf(id, it.data, ctx); documents.push(d); blocks.push({ t: 'h', text: (i + 1) + '. ' + d.title }); d.blocks.forEach(function (b) { blocks.push(b); }); });
+    var out = { title: sc.title, subtitle: v(ctx.project.name), sheet: sc.sheet, blocks: blocks, footer: 'Generado con Rinde Fácil.' };
+    if (documents.length && documents.every(function (d) { return d.anexoModelo; })) out.anexoDocumentos = documents;
+    return out;
   }
 
   /* Informe técnico completo: cabecera + fichas A–E */
-  function informeCompleto(ctx) { var d = getSingle(ctx.project, 'informe'); return informeDoc(d, ctx, false); }
+  function informeCompleto(ctx) { var d = getSingle(ctx.project, 'informe'); return SCHEMAS.informe.doc(d, ctx); }
 
-  RF.forms = { imageToSignature: imageToSignature, errors: errors, ficha: ficha, SCHEMAS: SCHEMAS, getSingle: getSingle, getList: getList, docOf: docOf, renderSingle: renderSingle, renderRepeat: renderRepeat, informeCompleto: informeCompleto, combinedDoc: combinedDoc, ctxNow: ctxNow };
+  /* Mantiene los bloques de datos para otros informes; Word usa el modelo exacto.
+     El nombre del Anexo 6 en la app es «ANEXO N° 6 INFORME TÉCNICO» (decisión de Felipe); el cuerpo del Word sigue siendo el modelo oficial.
+     La carga parcial de módulos de las pruebas históricas sigue admitida. */
+  ['anexo1', 'anexo2', 'anexo3', 'anexo4', 'anexo5', 'informe'].forEach(function (id) {
+    if (RF.anexoModelos && id !== 'informe') SCHEMAS[id].title = RF.anexoModelos.title(id);
+    var legacy = SCHEMAS[id].doc;
+    SCHEMAS[id].doc = function (data, ctx) {
+      var doc = legacy(data, ctx);
+      var conModelo = RF.anexoModelos ? RF.anexoModelos.attach(doc, id, data, ctx) : doc;
+      if (id === 'informe') conModelo.title = SCHEMAS.informe.title;
+      return conModelo;
+    };
+  });
+  ['informeA', 'informeB', 'informeC', 'informeD', 'informeE'].forEach(function (id) {
+    var legacy = SCHEMAS[id].doc;
+    SCHEMAS[id].doc = function (data, ctx) {
+      var doc = legacy(data, ctx);
+      return RF.anexoModelos ? RF.anexoModelos.attachFicha(doc, id, data) : doc;
+    };
+  });
+
+  RF.forms = { avanceFichas: avanceFichas, imageToSignature: imageToSignature, errors: errors, ficha: ficha, SCHEMAS: SCHEMAS, getSingle: getSingle, getList: getList, docOf: docOf, renderSingle: renderSingle, renderRepeat: renderRepeat, informeCompleto: informeCompleto, combinedDoc: combinedDoc, ctxNow: ctxNow };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -27,7 +27,7 @@
       community: { name: '', rut: '', address: '', legalRep: '', repRut: '', email: '', phone: '', ivaModo: 'no_contribuyente', oc: '', ocEmail: '', desembolsos: [] },
       cloud: { apiUrl: '', lastSync: null, rev: 0, autoSave: true, rootUrl: '', saves: [] },
       holidays: [], events: [], activity: [], signatures: [], projects: [], activeProjectId: null, repo: { docs: [], actas: [] },
-      ui: { theme: 'system', open: {}, idleMinutes: 15 }
+      ui: { theme: 'system', open: {}, idleMinutes: 15, driveFormats: { anexos: 'docx', gastos: 'xlsx', resumenes: 'pdf' } }
     };
   }
   function esAdmin(p) {
@@ -64,16 +64,12 @@
       var f = p.forms || {}, a5 = f.anexo5 && f.anexo5.data || {};
       function porId(x) { return !!x && gastos.some(function (e) { return e.id && x.gastoId === e.id; }); }
       function porFicha(x) { return !!x && porId(x.data); }
-      function porFila(x) {
-        return !!x && (porId(x) || gastos.some(function (e) {
-          var folio = String(e.folio == null ? '' : e.folio).trim();
-          return folio !== '' && String(x.doc == null ? '' : x.doc).trim() === folio;
-        }));
-      }
+      /* El folio no identifica al gasto. Las filas antiguas sin gastoId quedan
+         en origen: el Anexo 5 no guarda una clave documental completa. */
       var respaldos = {
         cotizaciones: (p.cotizaciones || []).filter(porId),
         anexo3: (Array.isArray(f.anexo3) ? f.anexo3 : []).filter(porFicha),
-        anexo5: { uso: (a5.uso || []).filter(porFila), hh: (a5.hh || []).filter(porFila) },
+        anexo5: { uso: (a5.uso || []).filter(porId), hh: (a5.hh || []).filter(porId) },
         informeC: (Array.isArray(f.informeC) ? f.informeC : []).filter(porFicha)
       };
       /* Preparar ambas copias antes de retirar nada: si JSON falla, el origen sigue completo.
@@ -94,7 +90,19 @@
       ['uso', 'hh'].forEach(function (k) { traslado.respaldos.anexo5[k].forEach(vincular); });
       function trasladar(origen, destino, clave, originales, nuevos) {
         if (!originales.length) return;
-        destino[clave] = (Array.isArray(destino[clave]) ? destino[clave] : []).concat(nuevos);
+        var existentes = Array.isArray(destino[clave]) ? destino[clave] : [], ids = Object.create(null);
+        existentes.forEach(function (x) { if (x && x.id) ids[x.id] = true; });
+        /* Reservar también los ids que llegan después: un id generado no debe
+           apropiarse del identificador de otro respaldo del mismo traslado. */
+        nuevos.forEach(function (x) { if (x && x.id) ids[x.id] = true; });
+        var usados = Object.create(null);
+        existentes.forEach(function (x) { if (x && x.id) usados[x.id] = true; });
+        nuevos.forEach(function (x) {
+          if (!x || (!x.id && (clave === 'uso' || clave === 'hh'))) return;
+          if (!x.id || usados[x.id]) { do { x.id = U.uid('adm'); } while (ids[x.id]); }
+          usados[x.id] = ids[x.id] = true;
+        });
+        destino[clave] = existentes.concat(nuevos);
         origen[clave] = origen[clave].filter(function (x) { return originales.indexOf(x) < 0; });
       }
       admin.expenses = admin.expenses.concat(traslado.gastos);
@@ -181,6 +189,7 @@
     if (/^SMI/i.test(out.community.oc || '')) out.community.oc = ''; /* el organismo se nombra por su rol, no por la institución */
     out.cloud = Object.assign({}, d.cloud, s.cloud || {});
     out.ui = Object.assign({}, d.ui, s.ui || {});
+    out.ui.driveFormats = Object.assign({}, d.ui.driveFormats, out.ui.driveFormats || {});
     out.holidays = Array.isArray(s.holidays) ? s.holidays : [];
     out.signatures = Array.isArray(s.signatures) ? s.signatures.filter(function (e) { return e && e.id && /^data:image\/png;base64,/.test(e.png || ''); }) : [];
     out.activity = Array.isArray(s.activity) ? s.activity.filter(function (e) { return e && typeof e === 'object' && e.id; }) : [];
@@ -235,16 +244,17 @@
     state = migrate(parsed);
     return state;
   }
-  var persistSoon = null, dirty = false;
+  var persistSoon = null, dirty = false, savesInFlight = 0;
   /* solo se escribe si hubo cambios: una pestaña vieja y sin tocar nunca pisa lo que guardó otra */
   function persistNow() {
     if (!dirty) return true;
     if (vaultMode) {
       if (!persistHook) { setStorageStatus(false, new Error('No hay un mecanismo de guardado conectado.')); return false; }
       dirty = false;
-      var st = state, hook = persistHook, version = stateVersion;
+      var st = JSON.parse(JSON.stringify(state)), hook = persistHook, version = stateVersion;
+      savesInFlight++;
       var attempt = pending.then(function () { return hook(st); });
-      latestSave = attempt.then(function () { if (stateVersion === version) dirty = false; setStorageStatus(true); return true; }, function (e) { dirty = true; setStorageStatus(false, e); throw e; });
+      latestSave = attempt.then(function () { savesInFlight--; if (stateVersion === version) dirty = false; setStorageStatus(true); return true; }, function (e) { savesInFlight--; dirty = true; setStorageStatus(false, e); throw e; });
       pending = latestSave.then(function () {}, function () {});
       return true;
     }
@@ -252,6 +262,7 @@
     catch (e) { setStorageStatus(false, e); return false; }
   }
   function schedulePersist() {
+    if (RF.auth && RF.auth.esGoogle && RF.auth.esGoogle()) { persistNow(); return; }
     if (typeof setTimeout === 'undefined') { persistNow(); return; }
     clearTimeout(persistSoon);
     persistSoon = setTimeout(persistNow, 150);
@@ -259,7 +270,10 @@
   /* Al cerrar o esconder la pestaña se intenta guardar; el navegador no garantiza esperar el cifrado asíncrono. */
   if (typeof root.addEventListener === 'function') {
     root.addEventListener('pagehide', function () { if (state) persistNow(); });
-    root.addEventListener('beforeunload', function () { if (state) persistNow(); });
+    root.addEventListener('beforeunload', function (e) {
+      if (state) persistNow();
+      if (vaultMode && (dirty || savesInFlight || RF.localPersistence && RF.localPersistence.pending())) { if (e && e.preventDefault) e.preventDefault(); if (e) e.returnValue = ''; }
+    });
     if (root.document && typeof root.document.addEventListener === 'function') root.document.addEventListener('visibilitychange', function () { if (root.document.visibilityState === 'hidden' && state) persistNow(); });
   }
   function get() { if (!state) load(); return state; }
@@ -482,10 +496,30 @@
     ensureAdminProject(s);
     /* el registro de migración de administración solo crece: se unen las dos copias sin repetir una misma migración */
     (function () {
-      var vistos = {}, lista = [];
+      var vistos = Object.create(null), lista = [];
       (s.migracionAdministracion || []).concat(r.migracionAdministracion || []).forEach(function (m) {
-        var k = JSON.stringify([m && m.desde && m.desde.id, (m.gastos || []).map(function (x) { return x && x.id; }), (m.lineas || []).map(function (x) { return x && x.id; }), m.montoMovido]);
-        if (!vistos[k]) { vistos[k] = true; lista.push(m); }
+        var identidad = copia(m);
+        (identidad.gastos || []).forEach(function (e) {
+          if (e && e.ocr) { delete e.ocr.raw; delete e.ocr.cortado; }
+        });
+        var k = stable(identidad), indices = vistos[k] || [];
+        var previo = indices.filter(function (i) {
+          return (m.gastos || []).every(function (e, j) {
+            var a = (lista[i].gastos[j] || {}).ocr || {}, b = (e || {}).ocr || {};
+            if (a.raw === b.raw) return true;
+            return typeof a.raw === 'string' && typeof b.raw === 'string' &&
+              (a.cortado && b.raw.indexOf(a.raw) === 0 || b.cortado && a.raw.indexOf(b.raw) === 0);
+          });
+        })[0];
+        if (previo === undefined) {
+          indices.push(lista.length); vistos[k] = indices; lista.push(copia(m));
+        } else {
+          // Conservar el OCR íntegro en cualquiera de las dos direcciones.
+          (m.gastos || []).forEach(function (e, j) {
+            var a = lista[previo].gastos[j].ocr, b = (e || {}).ocr;
+            if (a && b && a.cortado && (!b.cortado || (b.raw || '').length > (a.raw || '').length)) lista[previo].gastos[j].ocr = copia(b);
+          });
+        }
       });
       if (lista.length) s.migracionAdministracion = lista;
     })();

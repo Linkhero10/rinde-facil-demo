@@ -43,7 +43,10 @@
   }
   function fileButton(st, redraw, label, kind) {
     var inp = h('input', { type: 'file', accept: 'image/*,application/pdf,.pdf,.doc,.docx,.xls,.xlsx', class: 'sr-only', 'aria-label': 'Elegir el archivo' });
-    return h('div', { class: 'file-pick' }, inp, UI.btn(st.file ? 'Cambiar archivo' : (label || 'Elegir el archivo o sacar una foto'), { icon: 'file', cls: st.file ? 'ghost' : 'primary', onclick: function () { inp.click(); } }),
+    var camera = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'sr-only', 'aria-label': 'Sacar foto al documento' });
+    camera.addEventListener('change', function () { var file = camera.files && camera.files[0]; if (file) { st.file = file; redraw(); } });
+    return h('div', { class: 'file-pick' }, inp, camera, h('div', { class: 'row-actions' }, UI.btn(st.file ? 'Cambiar archivo' : (label || 'Elegir archivo'), { icon: 'file', cls: st.file ? 'ghost' : 'primary', onclick: function () { inp.click(); } }),
+      UI.btn('Sacar foto', { cls: 'ghost', onclick: function () { camera.click(); } })),
       st.file ? h('span', { class: 'file-name' }, st.file.name + ' · ' + Math.max(1, Math.round(st.file.size / 1024)) + ' KB') : (st.rec && st.rec.fileName ? h('span', { class: 'file-name' }, 'Archivo guardado: ' + st.rec.fileName) : h('span', { class: 'hint' }, 'PDF, foto, Word o Excel. Hasta 8 MB para el Drive.')),
       UI.fileDrop(inp, { kind: kind || 'official', label: 'Arrastra aquí el documento o pulsa para buscarlo', hint: 'No queda guardado hasta que pulses «Guardar». Elige el tipo antes de archivar.', invalidText: 'Formato no compatible aquí. Prueba con PDF, foto, Word o Excel.', onFiles: function (files) { if (files[0]) { st.file = files[0]; redraw(); } } }));
   }
@@ -137,8 +140,14 @@
       var box = h('div'), docs = repo().docs;
       box.appendChild(UI.callout('info', 'Para qué sirve:', ' aquí queda todo lo que llega de afuera: el PEA corregido por CORFO, el acta de no objeción, resoluciones, observaciones y las respuestas. Así, si alguien pregunta «¿qué versión valía?», está a mano.'));
       box.appendChild(h('div', { class: 'row-actions' }, UI.btn('Agregar un documento', { icon: 'plus', cls: 'primary', onclick: function () { st.rec = newRec(); st.editing = st.rec.id; st.file = null; paint(); } }), UI.btn('Sacar foto a un documento', { icon: 'camera', onclick: function () { st.rec = newRec(); st.editing = st.rec.id; st.file = null; paint(); } })));
-      /* historial de cambios al PEA */
-      var cambios = docs.filter(function (d) { return d.peaChange === 'si'; }).sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+      /* Se destaca la versión guardada; el registro por sí solo no prueba su vigencia normativa. */
+      var active = RF.store.project();
+      var latest = docs.filter(function (d) { return /^(pea_aprobado|pea_corregido)$/.test(d.type) && (!d.projectId || active && d.projectId === active.id); }).sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); })[0];
+      if (latest) box.appendChild(UI.section('PEA aprobado o final guardado', [h('p', null, h('strong', null, latest.title || TYPE_BY_ID[latest.type].name), latest.date ? ' · ' + U.fmtDateShort(latest.date) : ''),
+        h('p', { class: 'hint' }, 'Última versión por fecha de documento. Confirma su vigencia con la aprobación de CORFO; las anteriores siguen en el historial.'),
+        latest.blobId ? UI.btn('Ver esta versión', { cls: 'ghost', onclick: function () { openBlob(latest.blobId, latest.fileName); } }) : null]));
+      /* Solo las actualizaciones incompletas son pendientes; las terminadas siguen en el historial. */
+      var cambios = docs.filter(function (d) { return d.peaChange === 'si' && !(d.sgpDone && d.appDone); }).sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
       if (cambios.length) {
         box.appendChild(UI.section('Cambios al PEA: qué falta hacer', [h('p', { class: 'hint' }, 'Cada documento que cambia el PEA pide dos cosas: que quede configurado en SGP y que tu Carta Gantt y presupuesto de esta app queden al día.'),
           h('ul', { class: 'timeline' }, cambios.map(function (d) {
@@ -154,7 +163,7 @@
         return h('tr', null,
           h('td', { 'data-label': 'Fecha' }, d.date ? U.fmtDateShort(d.date) : '—'),
           h('td', { 'data-label': 'Documento' }, h('strong', null, d.title || t.name), h('div', { class: 'muted small' }, t.name + ' · ' + fromName(d.from) + ' · ' + projectName(d.projectId))),
-          h('td', { 'data-label': '¿Cambia el PEA?' }, d.peaChange === 'si' ? UI.badge('Sí', 'warn') : d.peaChange === 'nose' ? UI.badge('Por confirmar', 'info') : UI.badge('No', '')),
+          h('td', { 'data-label': '¿Cambia el PEA?' }, d.peaChange === 'si' ? UI.badge(d.sgpDone && d.appDone ? 'Al día' : 'Actualizar SGP y app', d.sgpDone && d.appDone ? 'ok' : 'warn') : d.peaChange === 'nose' ? UI.badge('Confirmar si cambia el PEA', 'info') : UI.badge('No', '')),
           h('td', { 'data-label': 'En el Drive' }, d.drive && d.drive.url ? h('a', { href: d.drive.url, target: '_blank', rel: 'noopener' }, 'Abrir') : (RF.drive && RF.drive.enabled() ? UI.btn('Guardar', { cls: 'ghost small', onclick: function () { driveSave('doc', d, null).then(function (r) { if (attachDriveResult(d, r)) { silent(); paint(); } }).catch(function () { }); } }) : '—')),
           h('td', { 'data-label': 'Acciones' }, h('div', { class: 'row-actions' },
             d.blobId ? UI.btn('Ver', { cls: 'ghost small', onclick: function () { openBlob(d.blobId, d.fileName); } }) : null,

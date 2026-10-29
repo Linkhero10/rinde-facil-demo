@@ -441,6 +441,8 @@ mark.search-hit{scroll-margin:120px}
 
 /* ---------- acceso con contraseña ---------- */
 .auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;background:var(--canvas)}
+.auth-wrap.organismo-acceso{padding-bottom:calc(112px + env(safe-area-inset-bottom, 0px))}
+.organismo-entrada{position:fixed;left:16px;bottom:16px;left:max(16px, env(safe-area-inset-left, 0px));bottom:max(16px, env(safe-area-inset-bottom, 0px));max-width:calc(100vw - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));white-space:normal;z-index:10}
 .auth-card{width:100%;max-width:460px;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:28px 24px;display:grid;gap:14px}
 .auth-brand{display:block;margin-bottom:2px}
 .auth-title{margin:0;font-family:var(--display);font-size:30px;line-height:1.1;text-transform:uppercase}
@@ -797,6 +799,20 @@ html.phone-view .main{padding:0 14px 80px}
   /* al tocar «Proyectos» u «Observaciones», el título queda bajo la barra superior fija */
   .panel-sec{scroll-margin-top:72px}
 }
+/* Vista de 390 px: misma barra y geometría que el móvil real. */
+html.phone-view .tabbar{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;align-items:flex-end;justify-content:space-around;gap:4px;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--paper);border-radius:20px 20px 0 0;box-shadow:0 -6px 22px rgba(20,10,40,.22)}
+html.phone-view .tb-item{flex:1 1 0;min-width:0;min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:6px 2px;border:0;background:none;color:var(--paper);opacity:.72;text-decoration:none;font:600 12px/1.1 var(--body);cursor:pointer;border-radius:8px}
+html.phone-view .tb-item.on{opacity:1}
+html.phone-view .tb-t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+html.phone-view .tb-centro{flex:0 0 auto;flex-basis:auto;width:80px;height:80px;min-height:0;margin-top:-30px;padding:0;gap:2px;border-radius:50%;background:#c4aaf2;color:#1d1630;opacity:1;box-shadow:0 8px 20px rgba(20,10,40,.35)}
+html.phone-view .tb-centro.on{color:#1d1630}
+html.phone-view .tb-centro .tb-t{font-size:10px;max-width:76px;text-align:center;white-space:normal;line-height:1.05}
+html.phone-view .main{padding-bottom:110px}
+html.phone-view .tb-pager{display:block;padding:0;background:none;box-shadow:none;border-radius:0;overflow:visible;touch-action:pan-y}
+html.phone-view .tb-pager .tb-page{position:relative;display:flex;align-items:flex-end;justify-content:space-around;gap:4px;box-sizing:border-box;padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--paper);border-radius:20px 20px 0 0;box-shadow:0 -6px 22px rgba(20,10,40,.22);will-change:transform}
+html.phone-view .tb-pager .tb-page + .tb-page{position:absolute;top:0;left:0;right:0}
+html.phone-view .tb-comunidad .tb-t{font-size:11px;letter-spacing:-.04em}
+html.phone-view .panel-sec{scroll-margin-top:72px}
 @media (max-width:900px) and (prefers-reduced-motion:no-preference){.tb-item{transition:color .15s ease}}
 
 /* ---------- estado de la comunidad: semáforo con texto, nunca solo color ---------- */
@@ -812,6 +828,7 @@ html.phone-view .main{padding:0 14px 80px}
 /* los contadores son botones de filtro: el seleccionado queda marcado con borde y no solo con color */
 button.estado-cifra{font:inherit;color:inherit;text-align:left;cursor:pointer;border-left:1px solid var(--line);border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
 button.estado-cifra.on{outline:2px solid var(--ink);outline-offset:2px}
+.clave-campo{display:flex;gap:8px;align-items:center}.clave-campo input{flex:1;min-width:0}
 .panel-det>summary{cursor:pointer;list-style:none}.panel-det>summary::-webkit-details-marker{display:none}
 .estado-cifra.atrasada{border-top-color:var(--bad)}
 .estado-cifra.observada{border-top-color:var(--warn)}
@@ -838,6 +855,8 @@ button.estado-cifra.on{outline:2px solid var(--ink);outline-offset:2px}
 /* ---------- panel: cabecera, indicadores, secciones ---------- */
 .panel-org .panel-head{margin-bottom:6px}
 .panel-org .lead{color:var(--muted);margin:8px 0 0;max-width:62ch}
+.panel-org .org-correo-opcion{display:flex;align-items:center;gap:8px;margin:12px 0}
+.panel-org .org-correo-opcion input{width:auto;flex:0 0 auto;margin:0}
 .det-estado{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px}
 .det-motivo{color:var(--ink-2);font-size:15px}
 .kpi-tira{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0 4px}
@@ -869,5 +888,3 @@ button.estado-cifra.on{outline:2px solid var(--ink);outline-offset:2px}
   .panel-org .plain-grid td:nth-child(3){grid-column:2;justify-self:end}
   .panel-org .plain-grid td:nth-child(4){grid-column:1/-1;font-variant-numeric:tabular-nums;color:var(--ink-2)}
 }
-
-.clave-campo{display:flex;gap:8px;align-items:center}.clave-campo input{flex:1;min-width:0}
